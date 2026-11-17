@@ -1,0 +1,341 @@
+"""The game's sound: effects banks (SOUND\\*.MSH + *.MSB), the music (SOUND\\JUKEBOXM.JBC) and speech
+(SOUND\\SPEECH\\<LANGUAGE>BAN.PCK + DAT.PCK). All of it is the SPU's ADPCM (hp2codec.dll; see hp2movie.Adpcm).
+
+Effects: the .MSH is u32 size, u32 pad, u32 count, then 52-byte records {char[32] name, s8 pan, u8 loop/channel (bit 0
+loops, bit 4 the right half of a stereo pair), u16 rate, u16 volume, u16 effect volume, u32 offset in the .MSB, u32 ADSR,
+u32 0}; the .MSH is padded to 64 bytes. A patch runs to the next one's offset. It starts with a frame of zeros; a patch that
+loops has the flags 6, 2, ..., 3 (from its second frame to its last), one that does not ends with 1.
+
+Music: a 32-byte header (16, 2 channels, 32000 Hz, 1, 4096), an index of 4096 bytes at 32 (a 64-byte category with the
+count, then 96-byte tunes {u32 offset of the tune's 48-byte VAG header, u32 size, u32 0, char[84] name}), each tune's audio
+at offset + 48 on a 2048-byte boundary, stereo in 0x8000-byte blocks left then right; the last real frame of both channels
+has the flag 1 and the next the flag 7, and the last pair is padded to its full size.
+
+Speech: the BAN's 16-byte entries {u32 count/handle, u32 the bank's offset in the BAN, u32 0, u32 the bank's base in the
+DAT}; a bank: u16 id, u16 sub, u8 flags (low nibble: parameters a sample), u8 samples, u8 queue, u8 unit (U = (b+1)*256),
+u16 end in units, u16; from +12 each sample's big-endian u16 offset in units and its parameters. A clip at base + offset*U is
+a 48-byte VAG header and mono ADPCM at 24000 Hz. A clip longer than its place moves its whole bank to the end of the DAT.
+
+Files may change size: the port builds its archive from the files at start. Keep the names: the game finds patches by name.
+"""
+
+import os
+import struct
+
+import numpy as np
+
+import hp2movie as mv
+
+MUSIC = "SOUND/JUKEBOXM.JBC"
+SPEECH_RATE = 24000
+MUSIC_RATE = 32000
+FRAME = 16
+SAMPLES = 28
+
+
+# ---- ADPCM with flags ---------------------------------------------------------------------------------------------------
+
+def decode_mono(data):
+    """ADPCM frames to samples, stopping at an end flag (1: this frame counts, 7: it does not)."""
+    n = len(data) // FRAME
+    end = n
+    for i in range(n):
+        f = data[i * FRAME + 1]
+        if f == 7:
+            end = i
+            break
+        if f == 1:
+            end = i + 1
+            break
+    return mv.Adpcm().decode(data[:end * FRAME])
+
+
+def encode_mono(pcm, lead_in=True):
+    """Samples to ADPCM frames (flags 0), a frame of zeros first if lead_in, padded to whole frames."""
+    pcm = np.asarray(pcm, np.int16)
+    pad = (-len(pcm)) % SAMPLES
+    if pad:
+        pcm = np.concatenate([pcm, np.zeros(pad, np.int16)])
+    body = mv.Adpcm().encode(pcm)
+    return (bytes(FRAME) if lead_in else b"") + body
+
+
+def set_flags(data, loop):
+    """The effects' flags: looping 0, 6, 2.., 3 (at least three frames); not looping 0.., 1."""
+    b = bytearray(data)
+    n = len(b) // FRAME
+    if loop:
+        while n < 3:
+            b += bytes(FRAME)
+            n += 1
+        for i in range(1, n):
+            b[i * FRAME + 1] = 6 if i == 1 else 3 if i == n - 1 else 2
+    else:
+        for i in range(n):
+            b[i * FRAME + 1] = 1 if i == n - 1 else 0
+    return bytes(b)
+
+
+def resample(pcm, src, dst):
+    """(n, channels) int16 from rate src to dst, linear."""
+    if src == dst or not len(pcm):
+        return pcm
+    t = np.arange(int(len(pcm) * dst / src)) * (src / dst)
+    return np.clip(np.round(np.stack([np.interp(t, np.arange(len(pcm)), pcm[:, c]) for c in range(pcm.shape[1])], 1)),
+                   -32768, 32767).astype(np.int16)
+
+
+def read_wav_any(path):
+    """(pcm (n, ch) int16, rate) of a WAV, as it is."""
+    import wave
+    with wave.open(path, "rb") as w:
+        ch, width, r, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+    pcm = mv.read_wav(path, r)          # 2 channels, at its own rate
+    if ch == 1:
+        pcm = pcm[:, :1]
+    return pcm, r
+
+
+# ---- effects banks ------------------------------------------------------------------------------------------------------
+
+class Patch:
+    def __init__(self, raw, index):
+        self.raw = bytearray(raw)
+        self.index = index
+
+    name = property(lambda s: bytes(s.raw[:32]).split(b"\0")[0].decode("latin-1"))
+    flags = property(lambda s: s.raw[33])
+    loops = property(lambda s: bool(s.raw[33] & 1))
+    right = property(lambda s: bool(s.raw[33] & 16))
+    rate = property(lambda s: struct.unpack_from("<H", s.raw, 34)[0])
+    volume = property(lambda s: struct.unpack_from("<H", s.raw, 36)[0])
+    offset = property(lambda s: struct.unpack_from("<I", s.raw, 40)[0])
+
+
+class Bank:
+    def __init__(self, msh, msb):
+        size, pad, n = struct.unpack_from("<III", msh, 0)
+        self.head = bytes(msh[:12])
+        self.patches = [Patch(msh[12 + 52 * i:12 + 52 * (i + 1)], i) for i in range(n)]
+        self.audio = []
+        for i, p in enumerate(self.patches):
+            end = self.patches[i + 1].offset if i + 1 < n else len(msb)
+            self.audio.append(bytes(msb[p.offset:end]))
+
+    def sounds(self):
+        """[(name, [patch indices: one, or left and right])]"""
+        out, i = [], 0
+        while i < len(self.patches):
+            p = self.patches[i]
+            if i + 1 < len(self.patches) and self.patches[i + 1].right and self.patches[i + 1].name == p.name:
+                out.append((p.name, [i, i + 1]))
+                i += 2
+            else:
+                out.append((p.name, [i]))
+                i += 1
+        return out
+
+    def pcm(self, idx):
+        """The sound without the patch's frame of zeros in front."""
+        chans = [decode_mono(self.audio[i])[SAMPLES:] for i in idx]
+        n = max(len(c) for c in chans)
+        return np.stack([np.pad(c, (0, n - len(c))) for c in chans], 1)
+
+    def replace(self, idx, pcm, rate):
+        """Put a sound in: pcm (n, ch) at `rate`, made the patches' rate and channel count, flags as they had."""
+        target = self.patches[idx[0]].rate
+        pcm = resample(pcm, rate, target)
+        if pcm.shape[1] < len(idx):
+            pcm = np.repeat(pcm, len(idx), 1)
+        for k, i in enumerate(idx):
+            ch = pcm[:, k] if len(idx) > 1 else (pcm.mean(1).astype(np.int16) if pcm.shape[1] > 1 else pcm[:, 0])
+            self.audio[i] = set_flags(encode_mono(ch), self.patches[i].loops)
+
+    def build(self):
+        """(msh, msb): the offsets made again from the patches' sizes."""
+        msb = bytearray()
+        recs = []
+        for p, a in zip(self.patches, self.audio):
+            msb += bytes((-len(msb)) & 15)
+            r = bytearray(p.raw)
+            struct.pack_into("<I", r, 40, len(msb))
+            recs.append(bytes(r))
+            msb += a
+        body = b"".join(recs)
+        n = 12 + len(body)
+        pad = (-n) & 63
+        msh = struct.pack("<III", n + pad, pad, len(recs)) + body + bytes(pad)
+        return msh, bytes(msb)
+
+
+def bank_paths(data):
+    """{bank name: (msh path, msb path)} of SOUND."""
+    out = {}
+    d = os.path.join(data, "SOUND")
+    for f in sorted(os.listdir(d)):
+        if f.upper().endswith(".MSH"):
+            msb = os.path.join(d, f[:-4] + ".MSB")
+            if os.path.isfile(msb):
+                out[f[:-4]] = (os.path.join(d, f), msb)
+    return out
+
+
+def load_bank(data, name):
+    msh, msb = bank_paths(data)[name]
+    return Bank(open(msh, "rb").read(), open(msb, "rb").read())
+
+
+# ---- music --------------------------------------------------------------------------------------------------------------
+
+class Jukebox:
+    def __init__(self, buf):
+        self.buf = buf
+        self.head = buf[:32]
+        isize = struct.unpack_from("<I", buf, 16)[0]
+        self.index = bytearray(buf[32:32 + isize])
+        n = struct.unpack_from("<I", self.index, 0)[0]
+        self.tunes = []
+        for i in range(n):
+            o = 64 + 96 * i
+            off, size = struct.unpack_from("<II", self.index, o)
+            self.tunes.append([off, size, bytes(buf[off:off + size])])
+
+    def name(self, i):
+        return bytes(self.index[64 + 96 * i + 12:64 + 96 * (i + 1)]).split(b"\0")[0].decode("latin-1")
+
+    def pcm(self, i):
+        """(n, 2) int16 at 32000."""
+        data = self.tunes[i][2][48:]
+        pairs = len(data) // (2 * mv.BLOCK)
+        L, R = [], []
+        for k in range(pairs):
+            p = k * 2 * mv.BLOCK
+            L.append(data[p:p + mv.BLOCK])
+            R.append(data[p + mv.BLOCK:p + 2 * mv.BLOCK])
+        lpcm, rpcm = decode_mono(b"".join(L)), decode_mono(b"".join(R))
+        n = min(len(lpcm), len(rpcm))
+        return np.stack([lpcm[:n], rpcm[:n]], 1)
+
+    def replace(self, i, pcm, rate):
+        pcm = resample(pcm, rate, MUSIC_RATE)
+        if pcm.shape[1] == 1:
+            pcm = np.repeat(pcm, 2, 1)
+        chans = [bytearray(encode_mono(pcm[:, c], lead_in=False)) for c in range(2)]
+        # the end: flag 1 on the last real frame, then a frame with 7, in both channels at the same place
+        for c in chans:
+            c[-FRAME + 1] = 1
+            c += bytes([0, 7]) + bytes(FRAME - 2)
+        per = len(chans[0])
+        pairs = -(-per // mv.BLOCK)
+        for c in chans:
+            c += bytes(pairs * mv.BLOCK - len(c))
+        body = bytearray()
+        for k in range(pairs):
+            body += chans[0][k * mv.BLOCK:(k + 1) * mv.BLOCK] + chans[1][k * mv.BLOCK:(k + 1) * mv.BLOCK]
+        old = self.tunes[i][2]
+        head = bytearray(old[:48])
+        struct.pack_into(">I", head, 12, 2 * per)
+        self.tunes[i][2] = bytes(head) + bytes(body)
+
+    def build(self):
+        out = bytearray(self.head) + self.index
+        for i, t in enumerate(self.tunes):
+            # the audio after the 48-byte header on a 2048-byte boundary, as the disc has it
+            while (len(out) + 48) % 2048:
+                out.append(0)
+            off = len(out)
+            out += t[2]
+            struct.pack_into("<II", out, 32 + 64 + 96 * i, off, len(t[2]))
+            out += bytes(2048)                     # and a sector of zeros after each tune
+        while len(out) % 2048:
+            out.append(0)
+        return bytes(out)
+
+
+# ---- speech -------------------------------------------------------------------------------------------------------------
+
+class SpeechBank:
+    def __init__(self, ban, n, entry):
+        self.entry = entry
+        _, boff, _, base = struct.unpack_from("<IIII", ban, entry * 16)
+        self.ban_off, self.base = boff, base
+        self.unit = (ban[boff + 7] + 1) * 256
+        self.npar = ban[boff + 4] & 15
+        self.count = ban[boff + 5]
+        self.end = struct.unpack_from("<H", ban, boff + 8)[0]
+        self.offsets = [struct.unpack_from(">H", ban, boff + 12 + i * (2 + self.npar))[0] for i in range(self.count)]
+
+
+class Speech:
+    def __init__(self, ban, dat):
+        self.ban = bytearray(ban)
+        self.dat = bytearray(dat)
+        n = struct.unpack_from("<I", ban, 0)[0]
+        self.n = n
+        self.banks = [SpeechBank(self.ban, n, e) for e in range(n)]
+
+    def clip_range(self, b, i):
+        """(start, slot end) of clip i of bank b in the DAT."""
+        bk = self.banks[b]
+        off = bk.offsets[i] & 0x7FFF
+        nxt = [o & 0x7FFF for o in bk.offsets if (o & 0x7FFF) > off]
+        end = min(nxt) if nxt else bk.end
+        return bk.base + off * bk.unit, bk.base + end * bk.unit
+
+    def pcm(self, b, i):
+        s, e = self.clip_range(b, i)
+        if self.dat[s:s + 4] != b"VAGp":
+            return np.zeros(0, np.int16)
+        size = struct.unpack_from(">I", self.dat, s + 12)[0]
+        return decode_mono(bytes(self.dat[s + 48:s + 48 + min(size, e - s - 48)]))
+
+    def replace(self, b, i, pcm, rate):
+        """A clip in: in its place when it fits, else its bank moves to the end of the DAT with the new clip."""
+        pcm = resample(pcm, rate, SPEECH_RATE)
+        mono = pcm.mean(1).astype(np.int16) if pcm.shape[1] > 1 else pcm[:, 0]
+        data = encode_mono(mono)
+        s, e = self.clip_range(b, i)
+        head = bytearray(self.dat[s:s + 48]) if self.dat[s:s + 4] == b"VAGp" else bytearray(b"VAGp" + bytes(44))
+        struct.pack_into(">I", head, 12, len(data))
+        clip = bytes(head) + data
+        if len(clip) <= e - s:
+            self.dat[s:e] = clip + bytes(e - s - len(clip))
+            return "in place"
+        bk = self.banks[b]
+        clips = []
+        for k in range(bk.count):
+            cs, ce = self.clip_range(b, k)
+            clips.append(clip if k == i else bytes(self.dat[cs:ce]))
+        new_base = len(self.dat) + ((-len(self.dat)) % 2048)
+        self.dat += bytes(new_base - len(self.dat))
+        pos = 0
+        offs = []
+        for c in clips:
+            offs.append(pos // bk.unit)
+            self.dat += c + bytes((-len(c)) % bk.unit)
+            pos += len(c) + ((-len(c)) % bk.unit)
+        if pos // bk.unit > 0xFFFF:
+            raise SystemExit("the bank would be too long")
+        for k, o in enumerate(offs):
+            struct.pack_into(">H", self.ban, bk.ban_off + 12 + k * (2 + bk.npar), (bk.offsets[k] & 0x8000) | o)
+        struct.pack_into("<H", self.ban, bk.ban_off + 8, pos // bk.unit)
+        struct.pack_into("<I", self.ban, b * 16 + 12, new_base)
+        self.banks[b] = SpeechBank(self.ban, self.n, b)
+        return "bank moved to the end of the file"
+
+
+def speech_languages(data):
+    d = os.path.join(data, "SOUND", "SPEECH")
+    out = []
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            if f.upper().endswith("BAN.PCK"):
+                lang = f[:-7]
+                if os.path.isfile(os.path.join(d, lang + "DAT.PCK")):
+                    out.append(lang)
+    return out
+
+
+def speech_paths(data, lang):
+    d = os.path.join(data, "SOUND", "SPEECH")
+    return os.path.join(d, lang + "BAN.PCK"), os.path.join(d, lang + "DAT.PCK")

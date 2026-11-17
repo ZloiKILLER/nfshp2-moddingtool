@@ -1,0 +1,10 @@
+# built files: the exe goes to Releases, the DLL is built by codec/build.sh
+*.exe
+*.dll
+*.lib
+*.exp
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec

@@ -1,0 +1,139 @@
+# Features
+
+What the NFSHP2 Modding suite 0.1 can change, tab by tab. Any change can be undone. The first change of a file keeps the
+disc's version as `<file>.orig`, and **Restore the disc's** in the tab of that file puts it back. The Experimental tab
+writes car, texture, physics and text files, so its changes are undone in the Cars, Textures, Car physics and Texts tabs.
+
+| Tab | What you change | Game files |
+|---|---|---|
+| [Cars](#cars) | car models, through OBJ, with a 3D viewer | `CARS\<CAR>\GEOMETRY.geo` |
+| [Textures](#textures) | any picture of the game, through PNG | `.tex` and `.BUN` files |
+| [Tracks](#tracks) | track models, through OBJ, with a fly-through viewer | `TRACKS\TRACKB<nn>.BUN` |
+| [Car physics](#car-physics) | every physics number of each car type | `GLOBAL\GLOBALB.BUN` |
+| [Texts](#texts) | every text, in six languages | `LANGUAGES\FE_<LANGUAGE>.lang` |
+| [Menu screens](#menu-screens) | where things are on the menus and how they look | `FRONTEND\FRONTB.BUN`, `GLOBAL\GLOBALB.BUN`, `GLOBAL\INGAMEB.BUN` |
+| [Sound](#sound) | effects, engines, music, speech, through WAV | `SOUND\` |
+| [Movies](#movies) | intro and menu movies, from any video, with a player | `MOVIES\` |
+| [Experimental](#experimental) | a car of NFS Underground in place of an HP2 car; car stats | as Cars, Textures, Car physics, Texts |
+| [All files](#all-files) | nothing: shows every file and whether the game uses it | everything under `data\` |
+
+## Cars
+
+- **View the car**: the car put together as the game draws it, in a 3D viewer. It shows the body at each level of
+  detail, the mirrors and plates, and the tyres and brakes where the car's wheels are, with any of its skins.
+- **Export OBJ** writes an OBJ and MTL:
+  - every part as its own object: the four levels of detail of the body, tyres, brakes, mirrors, wipers, plate, wheel
+    blur and scuffs;
+  - the whole car put together, for looking at;
+  - the pictures, if you want them: mesh only, the default skin, some skins, or all of them.
+- **Import OBJ** takes any shape: any number of polygons and any topology, made in Blender or anything else.
+  - Before anything is written, the viewer shows the car as it is now and as it will be.
+  - Parts that the OBJ does not have stay as they were, byte for byte.
+  - The damage dents keep working on a new body.
+- Skins, headlights and brake lights (off, on and broken), windows, tyres and the underside keep working as the game's
+  own slots.
+
+## Textures
+
+- Every picture of a file goes out as PNG and comes back by name. This covers the cars' skins and lights, the shared
+  car pictures (windows, tyres, plates, brakes), the menus, the HUD and the tracks.
+- A picture keeps its size and its format (4 or 8 bits with a palette, or 32 bits).
+- A PNG drawn with the palette's own colours stays exact. Any other picture gets a new palette and new mip levels.
+
+## Tracks
+
+- **View the track**: the whole track with every object in place (about half a million triangles). Fly through it
+  with W A S D and Q E; Shift goes faster.
+- **Export OBJ** writes the track's models, with the whole track put together in a second file for looking at.
+- **Import OBJ** changes models of the track: the road, the ground, buildings, trees and signs. A model that is placed
+  several times changes everywhere it stands. The game's visibility culling grows to take in the new shapes.
+
+## Car physics
+
+Every number of each of the 64 car types, in groups:
+
+- wheels: position, radius and width;
+- tyres: slip angle and grip;
+- body: mass, size and centre of gravity;
+- suspension;
+- gearbox: final drive, torque split, number of gears, the ratios;
+- engine: idle, red line, maximum RPM, the torque curve;
+- aerodynamics: drag and downforce;
+- control: steering, brakes, brake balance, top speed limiter.
+
+Double click a value to change it. JSON export and import change many cars at once. The inertia follows a new mass or
+size by itself.
+
+## Texts
+
+- All 2437 texts of the game in English, French, German, Italian, Spanish and Swedish. Double click a line to change it;
+  any length.
+- Export and import as a table (tab-separated UTF-8) for Excel, LibreOffice or a translation tool.
+- **With the port's texts** shows the Windows port's own translations and additions next to the game's.
+
+## Menu screens
+
+- Every screen of the menus and the HUD, drawn as the game draws it, with the game's own fonts and pictures.
+- Drag an object on the preview, or change its fields: position, scale, layer, visible or not, colour and transparency,
+  text, and picture.
+- **As the port draws them** shows the menus with the Windows port's own pages and rows (Graphics, Controls, Profiles and
+  others), marked as the port's. Reading them needs a port build that writes its menu dump after its own changes (newer
+  than 0.14).
+
+## Sound
+
+- **Effects**: 26 banks, among them the menu, the race, the regions and an engine bank for each car (12 engine loops and
+  the horn).
+- **Music**: the 23 tunes of the EA TRAX jukebox. A tune can be any length.
+- **Speech**: the commentary and the police radio, in each language.
+- Play any sound, export it as WAV, or replace it with your own WAV (any rate, 8 to 32 bits). It is converted to the
+  game's format, rate and channels by itself. A replaced effect loops if the original did.
+
+## Movies
+
+- **Play** a movie with its sound.
+- **Export** it as an ordinary AVI with its sound.
+- **Replace** it with any video (MP4, AVI, MKV, MOV...). It is scaled to the movie's size, set to 30 frames a second,
+  and encoded in the game's own movie format, with the sound from a WAV. The length is free and the quality is
+  adjustable.
+
+## Experimental
+
+These work, but they are new and checked on fewer cases than the rest.
+
+- **Car from Underground 1**: a car of the PC game Need for Speed: Underground in place of an HP2 car (the game has
+  exactly 64 car types and no free one).
+  - **Body**: the car's stock body at each level of detail.
+  - **Wheels and brakes**: its stock wheels (rim and tyre) and its stock brakes.
+  - **Lamps**: they switch on, off and break as HP2's do.
+  - **Glass**: the windows are glass, with the windscreen and the rear window in their own slots.
+  - **Skins**: Underground's first nine gloss paints, with its badges and details.
+  - **Wheel positions**: the wheels go where Underground puts them, and the physics follows.
+
+  You see the result in the viewer before it is written. Collision, engine sound and damage stay those of the HP2 car
+  it replaces.
+- **Car stats**: what the car select screen shows (full and short name, 0-60, top speed, power) in all six languages,
+  and the main physics: mass, power, grip, top speed, brakes, steering, gears, final drive and drag.
+
+## All files
+
+Every file of the installed game with what it is and its status:
+
+- **used** (the game names it, or it was read in play);
+- **unused**;
+- **not seen**;
+- **empty**;
+- **the port's own**;
+- **a backup**.
+
+## Limits
+
+- Textures keep their sizes. New textures cannot be added.
+- A car part holds at most 32,767 strip vertices (a body of about 20,000 triangles).
+- The game keeps the PS2's memory. A race leaves about 5 MB free for all the cars together, and a track takes up to
+  about 16 MB with its textures.
+- Collision does not follow a new shape:
+  - Cars keep their collision volumes. Wheel positions are in Car physics.
+  - Tracks keep their collision, the AI's routes and the cameras, so cars drive on the old ground.
+- The sound chip has 2 MB for every sound bank loaded at once, and a race leaves about 270 KB of it free, so keep new
+  effects short.
