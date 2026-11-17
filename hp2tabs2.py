@@ -103,7 +103,8 @@ def view_track(app, track):
 
     def work():
         path = dict(trk.track_files(data))[track]
-        t = trk.Track(open(path, "rb").read())
+        buf = open(path, "rb").read()
+        t = trk.Track(buf)
         names, packs = cli.track_pictures(data, track)
         cache = {}
 
@@ -119,20 +120,40 @@ def view_track(app, track):
                 img = tex.decode(tt, buf)
             cache[h] = img
             return img
-        placed = t.placed()
-        batches, tris = view.placed_batches(placed, rgba_of)
-        print("%s: %d instances, %d triangles, %d pictures" % (track, len(placed), tris, len(batches)))
+
+        def bits_of(h):
+            """The picture's AlphaBits (its record's byte 0x76: GS ALPHA's low byte), or None."""
+            hit = packs.get(h)
+            return hit[1][hit[0].rec_at + 0x76] if hit is not None else None
+        # the instances both directions draw, and those only one does (the game hides the other's: hp2track.DIRECTIONS)
+        batches, tris, placed = [], 0, []
+        for only in (0, 0x04, 0x08, 0x0C):
+            pl = t.placed(only=only)
+            if not pl:
+                continue
+            bs, n = view.placed_batches(pl, rgba_of, bits_of)
+            for b in bs:
+                b.excl = only
+            batches += bs
+            tris += n
+            placed += pl
+        ground = trk.Ground(buf)
+        markers = trk.read_markers(buf)
+        places = {d: trk.start_places(markers, d) for d in trk.DIRECTIONS}
+        print("%s: %d instances, %d triangles, %d batches; collision %d polygons; start places %s" % (
+            track, len(placed), tris, len(batches), ground.n, {d: len(p) for d, p in places.items()}))
         # the camera over the track, not outside its sky
         import numpy as np
         pts = np.array([m[3] for label, s, m, _ in placed if "SKY" not in s.full_name.upper()] or [[0, 0, 0]], float)
         lo, hi = pts.min(0), pts.max(0)
         cam = ((lo + hi) / 2, float(np.linalg.norm(hi - lo)) * 0.6, 35)
-        return (batches, tris), cam
+        return batches, tris, cam, ground, places
 
     def shown(res):
         if not res:
             return
-        v = view.MeshViewer(app, "%s (W A S D Q E fly, shift faster)" % track, [(track, res[0])], icon=g.ICON,
-                            camera=res[1])
-        app.say("the viewer: drag to look round, W/S/A/D/Q/E to fly (click it first), the wheel to zoom")
+        batches, tris, cam, ground, places = res
+        view.TrackViewer(app, track, batches, tris, cam, ground, places, trk.DIRECTIONS, icon=g.ICON)
+        app.say("the track viewer: Take the car's place puts you on the starting grid; with Collision you drive on "
+                "the road (click the view first)")
     app.run("put %s together" % track, work, shown)

@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 NAME = "NFSHP2 Modding suite"
-VERSION = "0.1"                   # the program's own (the exe's file properties), not the game's
+VERSION = "0.11"                  # the program's own (the exe's file properties), not the game's
 AUTHOR = "ZloiKILLER"
 YEAR = "2026"
 TITLE = "NFS Hot Pursuit 2"
@@ -42,8 +42,15 @@ TEXTURES
 Every picture of a file, as PNG, and back by name. A picture keeps its size and its format.
 
 TRACKS
-View the track (fly with W A S D, Q E; Shift goes faster), export the solids as OBJ and import them back. The \
-collision and the AI's routes stay as they are: cars drive on the old ground.
+View the track: the whole track as the game draws it. Fly over it with W A S D, Q E (Shift goes faster).
+    Direction: Forward or Backward. The game hides some objects (barriers, signs, road pieces) on each, and so does \
+the viewer.
+    Take the car's place: the eye where a driver's is, on the starting grid of that direction (Start place 1 to 8).
+    Collision: drive on the track's own collision surface. W goes faster, S brakes and reverses, A D steer, Shift \
+gives more power; the walls and rails stop you. Without it, W A S D Q E move freely. Left drag looks round.
+    Overview goes back over the track.
+Export the solids as OBJ and import them back. The collision and the AI's routes stay as they are: cars drive on the \
+old ground.
 
 CAR PHYSICS
 Every number of each car type: wheels, tyres, mass, suspension, gearbox, engine, aerodynamics, brakes, top speed. \

@@ -606,6 +606,10 @@ def selftest(game, out):
             print("the port's texts: %s" % {k: (len(a), len(b)) for k, (a, b) in hp2text.port_texts(data).items()})
             bt, tri = view.placed_batches(hp2track.Track(tb).placed()[:500], lambda h: None)
             print("track viewer: %d triangles of the first 500 instances" % tri)
+            ground, places = hp2track.Ground(tb), hp2track.start_places(hp2track.read_markers(tb), "forward")
+            if places:
+                print("track ground: %d polygons; start place 1 at %.1f %.1f, ground %s" % (
+                    ground.n, places[0][0], places[0][1], ground.elevation(places[0][0], places[0][1])))
             import ctypes
             try:
                 ctypes.windll.comctl32.TaskDialog

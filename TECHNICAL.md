@@ -34,7 +34,7 @@ The `.py` files also run without building:
   - every strip packet encodes again to the same bytes;
   - export to OBJ and import back gives the same triangles, vertices and materials.
 
-  For release 0.1 all 44 cars pass.
+  For release 0.11 all 44 cars pass.
 - **`ModManager.exe --selftest GAME OUT`** runs every part through the built exe and writes `OUT/selftest.log`. It
   writes nothing to the game. It covers:
   - car export and an import in dry-run mode;

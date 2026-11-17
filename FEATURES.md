@@ -1,6 +1,6 @@
 # Features
 
-What the NFSHP2 Modding suite 0.1 can change, tab by tab. Any change can be undone. The first change of a file keeps the
+What the NFSHP2 Modding suite 0.11 can change, tab by tab. Any change can be undone. The first change of a file keeps the
 disc's version as `<file>.orig`, and **Restore the disc's** in the tab of that file puts it back. The Experimental tab
 writes car, texture, physics and text files, so its changes are undone in the Cars, Textures, Car physics and Texts tabs.
 
@@ -42,8 +42,11 @@ writes car, texture, physics and text files, so its changes are undone in the Ca
 
 ## Tracks
 
-- **View the track**: the whole track with every object in place (about half a million triangles). Fly through it
-  with W A S D and Q E; Shift goes faster.
+- **View the track**: the whole track with every object in place (about half a million triangles), drawn the way the
+  game draws it: solid, cut-out and see-through pictures, and the objects of the chosen direction (forward or backward).
+  Fly over it with W A S D and Q E; Shift goes faster.
+- **Take the car's place**: the eye of a driver on the starting grid, at any of its eight places, in either direction.
+- **Drive** on the track's own collision surface: up kerbs and slopes, under bridges, stopped by walls and rails.
 - **Export OBJ** writes the track's models, with the whole track put together in a second file for looking at.
 - **Import OBJ** changes models of the track: the road, the ground, buildings, trees and signs. A model that is placed
   several times changes everywhere it stands. The game's visibility culling grows to take in the new shapes.
