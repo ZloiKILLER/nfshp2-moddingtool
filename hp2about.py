@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 NAME = "NFSHP2 Modding suite"
-VERSION = "0.11"                  # the program's own (the exe's file properties), not the game's
+VERSION = "0.12"                  # the program's own (the exe's file properties), not the game's
 AUTHOR = "ZloiKILLER"
 YEAR = "2026"
 TITLE = "NFS Hot Pursuit 2"
@@ -39,7 +39,14 @@ skin, some skins or all of them.
 In Blender: import and export with Up Z, Forward Y; keep the object and material names.
 
 TEXTURES
-Every picture of a file, as PNG, and back by name. A picture keeps its size and its format.
+Every picture of a file, as PNG, and back by name.
+    A picture of the texture's size keeps its format.
+    A picture of another size gives the texture that size, and a 16-colour texture can become 256-colour. The file \
+grows by the new pixels: the game keeps the PS2's memory, so keep car textures to what you need.
+    One texture may take as much of the game's texture memory as the disc's largest (2048 blocks): up to 1024 x 1024 \
+at 16 colours, 1024 x 512 at 256. A bigger one is refused, and 256 colours that would not fit stay 16.
+    The textures that show the same pixels under other names (an HP version, a dash in other colours) keep their \
+colours.
 
 TRACKS
 View the track: the whole track as the game draws it. Fly over it with W A S D, Q E (Shift goes faster).
@@ -67,6 +74,12 @@ game for a few seconds to read them).
 
 SOUND
 Effects, music and speech: play them, export them as WAV, replace them with your WAV.
+    Many at once: Export all, change the WAVs you want, then Import a folder of WAVs puts every one back by its name \
+(Write then puts them into the game).
+    All the game's sound: Export all (WAV tree) writes Effects\\<BANK>, Music and Speech\\<LANGUAGE>; Import a WAV tree \
+puts such a tree, or any part of it (a sound mod), into the game at once.
+    A WAV left as it was exported is passed over, as each new encoding loses a little. The sound chip has 2 MB for \
+every bank loaded at once and a race leaves about 270 KB of it free: the import says how much a bank grows.
 
 MOVIES
 Play a movie, export it as an AVI with its sound, or replace it with any video (MP4, AVI, MKV...).
@@ -80,7 +93,7 @@ ALL FILES
 Every file of the install, what it is, and whether the game uses it.
 
 LIMITS
-Pictures keep their sizes. A race leaves about 5 MB of the game's memory free for all the cars together. Collision and \
+Pictures up to 1024 x 1024 at 16 colours or 1024 x 512 at 256. A race leaves about 5 MB of the game's memory free for all the cars together. Collision and \
 physics do not follow a new shape: change them in Car physics.
 
 FROM A COMMAND LINE

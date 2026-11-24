@@ -9,12 +9,17 @@ keeps the disc's version beside it as <file>.orig, and `restore` puts that back.
                                                            textures/*.png; --bare, --skins 1,3|all, --lod A..D
     python hp2assets.py import-car GAME CAR FILE.obj       rebuild the parts the OBJ has (objects named as in the export)
     python hp2assets.py export-textures GAME FILE OUT      every texture of a file as PNG (FILE e.g. CARS/TEXTURES.tex)
-    python hp2assets.py import-textures GAME FILE PNG...   PNGs (or folders of them) back by name, same size
+    python hp2assets.py import-textures GAME FILE PNG...   PNGs (or folders of them) back by name, any size;
+                                                           --keep-size, --256 (16 colours made 256 with a new size)
+    python hp2assets.py export-sounds GAME OUT             every sound as WAV: OUT/Effects/<BANK>, Music, Speech/<LANGUAGE>
+    python hp2assets.py import-sounds GAME FOLDER          such a tree (or any part of it) back, by name; --dry-run
     python hp2assets.py restore GAME FILE|CAR              the disc's version back
     python hp2assets.py verify GAME                        decode and re-encode every car: the tool against the disc
 
-Models: any topology, see hp2model.py. Textures keep their size and format (4 or 8 bits with a palette, or 32): a picture with
-more colours than the palette gets a new one. Needs Python 3.10+, numpy and Pillow.
+Models: any topology, see hp2model.py. Textures keep their format (4 or 8 bits with a palette, or 32) unless --256 is given:
+a picture with more colours than the palette gets a new one. A picture of another size gives the texture that size (up to
+2048 a side; hp2tex.resize): its pixels go at the end of the pack, and the textures that show them keep their colours.
+Needs Python 3.10+, numpy and Pillow.
 """
 
 import argparse
@@ -337,8 +342,10 @@ def cmd_export_textures(a):
 def cmd_import_textures(a):
     data = data_dir(a.game)
     path = resolve(data, a.file)
-    buf = bytearray(open(path, "rb").read())
-    textures = tex.read_textures(buf)
+    buf = bytes(open(path, "rb").read())
+    size0 = len(buf)
+    resize_ok = getattr(a, "resize", True)
+    deep = getattr(a, "bpp8", False)
     pngs = []
     for p in a.png:
         if os.path.isdir(p):
@@ -349,17 +356,28 @@ def cmd_import_textures(a):
     for p in pngs:
         stem = os.path.splitext(os.path.basename(p))[0]
         name, _, h = stem.partition("@")
-        hits = [t for t in textures if (t.name.upper() == name.upper() or t.hash == core.bhash(name))
-                and (not h or "%08x" % t.hash == h.lower())]
+        match = lambda t: ((t.name.upper() == name.upper() or t.hash == core.bhash(name))
+                           and (not h or "%08x" % t.hash == h.lower()) and not t.parent)
+        hits = [t.hash for t in tex.read_textures(buf) if match(t)]
         if not hits:
             print("%s: no texture %s in %s" % (os.path.basename(p), stem, a.file))
             continue
         rgba = tex.read_png(p)
-        for t in hits:
-            if t.parent:
+        for hsh in hits:
+            # read again each time: a texture of a new size moves what follows it
+            t = next(x for x in tex.read_textures(buf) if x.hash == hsh and match(x))
+            other_size = (rgba.shape[1], rgba.shape[0]) != (t.width, t.height)
+            if other_size and not resize_ok:
+                print("%s: %s is %dx%d, the picture %dx%d (without --keep-size the texture takes the picture's size)" % (
+                    os.path.basename(p), t.name, t.width, t.height, rgba.shape[1], rgba.shape[0]))
                 continue
+            want = 8 if deep and t.bpp == 4 and other_size else None
+            if want and not tex.fits(t, rgba.shape[1], rgba.shape[0], want) and tex.fits(t, rgba.shape[1], rgba.shape[0]):
+                print("%s: 256 colours at %dx%d would pass what the game's texture memory takes; kept at 16" % (
+                    t.name, rgba.shape[1], rgba.shape[0]))
+                want = None
             try:
-                how = tex.encode_into(buf, t, rgba)
+                buf, how = tex.replace(buf, t, rgba, want)
             except ValueError as e:
                 print("%s: %s" % (os.path.basename(p), e))
                 continue
@@ -369,6 +387,9 @@ def cmd_import_textures(a):
     if not changed:
         print("nothing changed")
         return
+    if len(buf) != size0:
+        print("%s grows by %d KB (the game keeps the PS2's memory: a race has about 5 MB free for all the cars)" % (
+            a.file, (len(buf) - size0) // 1024))
     if a.dry_run:
         print("dry run: nothing written")
         return
@@ -461,6 +482,23 @@ def rebuild_track(data, track, obj, log=print):
     if changed:
         log("note: the collision, the AI's routes and the cameras stay as they were: cars drive on the old ground")
     return path, buf, out
+
+
+def cmd_export_sounds(a):
+    import hp2sound as so
+    so.export_all(data_dir(a.game), a.out)
+
+
+def cmd_import_sounds(a):
+    """A tree of WAVs (Effects\\<BANK>\\, Music\\, Speech\\<LANGUAGE>\\, as export-sounds makes it; any part of it) into
+    the game, by name."""
+    import hp2sound as so
+    data = data_dir(a.game)
+    if a.dry_run:
+        so.import_tree(data, a.folder, lambda p, b: print("would write %s" % os.path.relpath(p, data)))
+        print("dry run: nothing written")
+        return
+    so.import_tree(data, a.folder, replace_file)
 
 
 def cmd_restore(a):
@@ -564,7 +602,20 @@ def main():
     p.add_argument("file")
     p.add_argument("png", nargs="+")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--keep-size", dest="resize", action="store_false",
+                   help="refuse a picture of another size instead of giving the texture the picture's size")
+    p.add_argument("--256", dest="bpp8", action="store_true",
+                   help="a 16-colour (4-bit) texture given a new size becomes 256-colour (8-bit)")
     p.set_defaults(fn=cmd_import_textures)
+    p = sub.add_parser("export-sounds", help="every effect, tune and speech clip as WAV, in a tree")
+    p.add_argument("game")
+    p.add_argument("out")
+    p.set_defaults(fn=cmd_export_sounds)
+    p = sub.add_parser("import-sounds", help="a tree of WAVs (as export-sounds makes it, or any part) into the game")
+    p.add_argument("game")
+    p.add_argument("folder")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(fn=cmd_import_sounds)
     p = sub.add_parser("restore")
     p.add_argument("game")
     p.add_argument("what")

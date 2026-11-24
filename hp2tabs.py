@@ -327,7 +327,7 @@ class TextsTab:
         if p is not None:
             return p
         lf = self.files.get(lang)
-        return self.tx.to_text(lf.texts.get(i, b"")) if lf else ""
+        return self.tx.to_text(lf.texts.get(i, b""), lf.cyrillic) if lf else ""
 
     def fill(self):
         self.tree.delete(*self.tree.get_children())
@@ -354,7 +354,7 @@ class TextsTab:
                 for en, t in strings.items():
                     own.setdefault(en, {})[lang] = t
             for k, (en, tr) in enumerate(sorted(own.items())):
-                row = [en if l == "ENGLISH" else tr.get(l, "") for l in self.tx.LANGUAGES]
+                row = [tr.get(l, en if l == "ENGLISH" else "") for l in self.tx.LANGUAGES]
                 if flt and not any(flt in r.lower() for r in row):
                     continue
                 self.tree.insert("", "end", iid="p:%d" % k, text="port", values=row)
@@ -380,7 +380,7 @@ class TextsTab:
             for l, v in vars_.items():
                 s = v.get()
                 try:
-                    self.tx.from_text(s)
+                    self.tx.from_text(s, bool(self.files.get(l) and self.files[l].cyrillic))
                 except ValueError as ex:
                     messagebox.showerror("Text", str(ex), parent=d)
                     return
@@ -791,8 +791,12 @@ class SoundTab:
         ttk.Button(btns, text="Export selected (WAV)…", command=lambda: self.export(True)).pack(fill="x", pady=(16, 2))
         ttk.Button(btns, text="Export all (WAV)…", command=lambda: self.export(False)).pack(fill="x", pady=2)
         ttk.Button(btns, text="Replace with a WAV…", command=self.replace).pack(fill="x", pady=(16, 2))
+        ttk.Button(btns, text="Import a folder of WAVs…", command=self.import_folder).pack(fill="x", pady=2)
         ttk.Button(btns, text="Write into the game", command=self.write).pack(fill="x", pady=2)
         ttk.Button(btns, text="Discard edits", command=self.open_source).pack(fill="x", pady=2)
+        ttk.Label(btns, text="All the game's sound:").pack(anchor="w", pady=(16, 0))
+        ttk.Button(btns, text="Export all (WAV tree)…", command=self.export_tree).pack(fill="x", pady=2)
+        ttk.Button(btns, text="Import a WAV tree…", command=self.import_tree).pack(fill="x", pady=2)
         ttk.Button(btns, text="Restore the disc's", command=self.restore).pack(fill="x", pady=(16, 2))
         ttk.Label(btns, justify="left", text="A WAV takes the sound's rate\nand channels, and loops if\nit looped. "
                   "Keep effects\nshort: the sound chip has\n2 MB for all banks at once.").pack(pady=8)
@@ -902,13 +906,80 @@ class SoundTab:
         if not out:
             return
 
+        keys = {self._key(i) for i in ids}
+        kind, obj = self.kind, self.obj
+
         def work():
-            safe = lambda s: "".join(c if c.isalnum() or c in "-_ ()." else "_" for c in s)
-            for iid in ids:
-                pcm, rate, name = self.pcm(iid)
-                mv.write_wav(os.path.join(out, safe(name) + ".wav"), pcm, rate)
-            print("%d WAVs -> %s" % (len(ids), out))
+            # the names Import a folder reads back (hp2sound.items)
+            n = self.so.export_source(kind, obj, out, keys)
+            print("%d WAVs -> %s" % (n, out))
         self.app.run("export sounds", work)
+
+    def _key(self, iid):
+        """The item's key in hp2sound.items: an effect's patch indices, a tune's number, (bank, clip)."""
+        if self.kind == "Effects":
+            return tuple(self.obj.sounds()[int(iid)][1])
+        if self.kind == "Music":
+            return int(iid)
+        return tuple(map(int, iid.split(":")))
+
+    def _iid(self, key):
+        if self.kind == "Effects":
+            return str(next(k for k, (_, idx) in enumerate(self.obj.sounds()) if tuple(idx) == key))
+        if self.kind == "Music":
+            return str(key)
+        return "%d:%d" % key
+
+    def import_folder(self):
+        """A folder of WAVs into the open source, by the names Export gives them; Write puts them into the game."""
+        folder = _ask_dir(self.app, "A folder of WAVs for %s" % self.source.get())
+        if not folder:
+            return
+        kind, obj = self.kind, self.obj
+
+        def work():
+            rep = self.so.import_folder(kind, obj, folder)
+            for f in rep["unknown"]:
+                print("%s: no sound of that name here" % f)
+            for f, why in rep["bad"]:
+                print("%s: %s" % (f, why))
+            print("%d replaced, %d as they were, %d not matched" % (len(rep["changed"]), len(rep["same"]),
+                                                                    len(rep["unknown"]) + len(rep["bad"])))
+            return rep
+
+        def done(rep):
+            if not rep or not rep["changed"]:
+                return self.app.say("nothing replaced")
+            self.dirty = True
+            by_stem = {stem: key for key, stem, _ in self.so.items(kind, obj)}
+            for stem in rep["changed"]:
+                iid = self._iid(by_stem[stem])
+                if self.tree.exists(iid):
+                    self.tree.item(iid, text=self.tree.item(iid, "text").rstrip(" *") + " *")
+            self.app.say("%d sounds replaced; Write puts them into the game" % len(rep["changed"]))
+        self.app.run("import a folder into %s" % self.source.get(), work, done)
+
+    def export_tree(self):
+        out = _ask_dir(self.app, "Export all the game's sound into")
+        if not out:
+            return
+        data = self.app.data()
+        self.app.run("export all sound", lambda: self.so.export_all(data, out))
+
+    def import_tree(self):
+        folder = _ask_dir(self.app, "A WAV tree (Effects, Music, Speech) to put in")
+        if not folder:
+            return
+        if not messagebox.askyesno(
+                "Import a WAV tree", "Every WAV under %s goes into the game by its folder and name, as Export all "
+                "writes them: Effects\\<BANK>, Music, Speech\\<LANGUAGE>. A part of the tree is enough.\n\nWAVs that "
+                "are the sound as it is are left alone. The files changed keep the disc's copy (.orig).\n\nClose the "
+                "game first. Go on?" % folder, parent=self.app):
+            return
+        data = self.app.data()
+        self.dirty = False
+        self.app.run("import a WAV tree", lambda: self.so.import_tree(data, folder, cli.replace_file),
+                     lambda _: self.open_source())
 
     def replace(self):
         sel = [i for i in self.tree.selection() if not i.startswith("b")]

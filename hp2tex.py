@@ -245,6 +245,12 @@ def encode_into(buf, t, rgba):
         pal, idx0 = _quantize(gs[0], entries)
         how = "new palette"
     idxs = [idx0] + [_nearest(g, pal) for g in gs[1:]]
+    _write_indexed(buf, t, pal, idxs)
+    return how
+
+
+def _write_indexed(buf, t, pal, idxs):
+    """A paletted texture's levels (palette indices in raster order, one array a level) and its palette, written."""
     for (lvl, w, h, off, n), idx in zip(t.mips(), idxs):
         idx = idx.astype(np.uint8)
         sw = lvl < len(t.swizzled) and t.swizzled[lvl] and _swizzle_closes(w, h, t.bpp)
@@ -265,7 +271,250 @@ def encode_into(buf, t, rgba):
     stored = np.empty_like(pal)
     stored[_clut_order(len(pal), t.bpp)] = pal
     buf[t.base + t.palette_at:t.base + t.palette_at + t.palette_size] = stored.tobytes()
-    return how
+
+
+# ---- a new size ----------------------------------------------------------------------------------------------------------
+#
+# A texture's pixels are a range of its pack's blob ([ImagePlacement, + ImageSize]), and that is all the game reads of
+# them: LoaderTexturePack points at it, and the streamed packs (CARS\TEXTURES, GLOBAL\HUDTEX, GLOBAL\DYNTEX) read just
+# that range from the file when a texture is asked for. So a texture of another size gets its pixels at the end of the
+# blob, and its record the fields that follow from the size. The old pixels stay where they were, unread. The table does
+# not move, and it stays inside the first 128 KB that LoadTextureTableFromFile reads.
+
+# a 256-byte block's number in its page, by block row and column, as the GS arranges them
+_B32 = [[0, 1, 4, 5, 16, 17, 20, 21], [2, 3, 6, 7, 18, 19, 22, 23], [8, 9, 12, 13, 24, 25, 28, 29],
+        [10, 11, 14, 15, 26, 27, 30, 31]]
+_B4 = [[0, 2, 8, 10], [1, 3, 9, 11], [4, 6, 12, 14], [5, 7, 13, 15], [16, 18, 24, 26], [17, 19, 25, 27],
+       [20, 22, 28, 30], [21, 23, 29, 31]]
+_GEOM = {32: (64, 32, 8, 8, _B32), 8: (128, 64, 16, 16, _B32), 4: (128, 128, 32, 16, _B4)}   # page, block, table
+
+MAX_SIDE = 2048             # what the port's renderer takes; the PS2's GS took 1024
+# The most GS memory one texture may take, in 256-byte blocks (ImageVramBlocksRequired): the disc's largest, SPLASH_SCREEN
+# (512 x 256, 32-bit). Past it the game does not cope: a 911 skin made 1024 x 640 at 8 bits (2560 blocks) made the car
+# select build more than 64 MB of lists in one frame and stop, on the colour that shows it (2026-11-23). The game's
+# texture memory manager is where the limit is; the tool keeps to what the disc itself uses.
+MAX_VRAM_BLOCKS = 2048
+
+
+def vram_blocks(bpp, w, h):
+    """The 256-byte GS blocks a level takes: whole pages but the last, and in the last page up to its highest block
+    (ImageVramBlocksRequired is their sum over the levels: so on 12314 of the disc's 12367 textures)."""
+    pw, ph, bw, bh, table = _GEOM[bpp]
+    npw, nph = -(-w // pw), -(-h // ph)
+    lw, lh = w - (npw - 1) * pw, h - (nph - 1) * ph
+    top = max(table[r][c] for r in range(-(-lh // bh)) for c in range(-(-lw // bw)))
+    return (npw * nph - 1) * 32 + top + 1
+
+
+def buffer_width(bpp, w):
+    """TBW, the buffer width in 64s: even and at least 2 for the palette modes (every level on the disc has it so)."""
+    b = -(-w // 64)
+    return max(2, b + (b & 1)) if bpp in (4, 8) else max(1, b)
+
+
+def _containing(buf, at, off=0, end=None):
+    """The headers of the containers that hold the chunk at `at`, outermost first, and that chunk's own header."""
+    end = len(buf) if end is None else end
+    for cid, o, s in _chunks(buf, off, end):
+        if o == at:
+            return [o]
+        if o < at < o + 8 + s and cid & 0x80000000:
+            return [o] + _containing(buf, at, o + 8, o + 8 + s)
+    return []
+
+
+PSM = {4: 0x14, 8: 0x13, 32: 0x00}
+
+
+class TooBig(ValueError):
+    """A size and depth that would take more of the GS's memory than the game copes with (MAX_VRAM_BLOCKS)."""
+
+
+def fits(t, w, h, bpp=None):
+    """Whether texture t may become w x h (at bpp, or its own depth) without passing MAX_VRAM_BLOCKS."""
+    bpp = bpp or t.bpp
+    levels = max(1, min(t.levels, min(w, h).bit_length()))
+    return sum(vram_blocks(bpp, max(1, w >> l), max(1, h >> l)) for l in range(levels)) <= MAX_VRAM_BLOCKS
+
+
+def resize(buf, t, w, h, bpp=None):
+    """The file `buf` (bytes) with texture t made w x h, and with bpp 8 a 4-bit texture made 8-bit (256 colours in place of
+    16): its number of levels kept (as many as the new size has room for), its pixels at the end of its pack's blob,
+    cleared, and with a new depth its palette and those of the textures that borrow its pixels there too, cleared. Its
+    record and those textures' get the new size. Everything after the blob moves by a multiple of 2048 bytes, so every
+    chunk after it keeps its alignment. Answers the new bytes; write the picture with encode_into (or all of it with
+    replace) after reading the textures again."""
+    if t.parent:
+        raise ValueError("%s borrows its pixels from another texture (hash %08x): change that one" % (t.name, t.parent))
+    if t.bpp not in _GEOM:
+        raise ValueError("%s: %d bits a texel" % (t.name, t.bpp))
+    bpp = bpp or t.bpp
+    if bpp != t.bpp and not (t.bpp == 4 and bpp == 8):
+        raise ValueError("%s: %d bits a texel cannot become %d" % (t.name, t.bpp, bpp))
+    if not (8 <= w <= MAX_SIDE and 8 <= h <= MAX_SIDE) or w % 2:
+        raise ValueError("%dx%d: a side from 8 to %d, the width even" % (w, h, MAX_SIDE))
+    buf = bytearray(buf)
+    # the pack's blob
+    pack = next((o, s) for o, s in find_packs(buf) if o < t.rec_at < o + 8 + s)
+    data = next(o for cid, o, s in _chunks(buf, pack[0] + 8, pack[0] + 8 + pack[1]) if cid == PACK_DATA)
+    size, = struct.unpack_from("<I", buf, data + 4)
+    blob_end = data + 8 + size
+    base = t.base
+    # the levels and where the pixels go, and the palettes when the depth changes
+    levels = max(1, min(t.levels, min(w, h).bit_length()))
+    sizes = [(max(1, w >> l), max(1, h >> l)) for l in range(levels)]
+    need = sum(vram_blocks(bpp, lw, lh) for lw, lh in sizes)
+    if need > MAX_VRAM_BLOCKS:
+        raise TooBig("%s at %dx%d, %d-bit takes %d blocks of the GS's memory; the game copes with %d at most (the "
+                     "disc's largest texture). Make the picture smaller%s." % (
+                         t.name, w, h, bpp, need, MAX_VRAM_BLOCKS, " or keep 16 colours" if bpp == 8 and t.bpp == 4
+                         else ""))
+    nbytes = sum(lw * lh * bpp // 8 for lw, lh in sizes)
+    place = (blob_end - base + 127) & ~127
+    end = place + nbytes
+    kids = [o for o in read_textures(buf) if o.parent == t.hash]
+    pals = {}
+    if bpp != t.bpp:
+        for o in [t] + [k for k in kids if k.palette_size]:
+            pals[o.rec_at] = (end + 127) & ~127
+            end = pals[o.rec_at] + 1024
+    grow = base + end - blob_end
+    grow += (-grow) % 2048
+    buf[blob_end:blob_end] = bytes(grow)
+    for hdr in _containing(buf, data):
+        struct.pack_into("<I", buf, hdr + 4, struct.unpack_from("<I", buf, hdr + 4)[0] + grow)
+    # the record
+    r = t.rec_at
+    if bpp != t.bpp:
+        buf[r + 0x28] = bpp
+        struct.pack_into("<HH", buf, r + 0x2A, 256, 4)          # NumPaletteEntries, PaletteVramBlocksRequired
+        buf[r + 0x4A] = PSM[bpp]
+    struct.pack_into("<2H", buf, r + 0x24, w, h)
+    struct.pack_into("<H", buf, r + 0x2E, sum(vram_blocks(bpp, lw, lh) for lw, lh in sizes))
+    struct.pack_into("<I", buf, r + 0x30, place)
+    struct.pack_into("<I", buf, r + 0x38, nbytes)
+    struct.pack_into("<I", buf, r + 0x44, nbytes)
+    buf[r + 0x48] = max(0, (w - 1).bit_length())
+    buf[r + 0x49] = max(0, (h - 1).bit_length())
+    blocks = 0
+    for l in range(7):
+        e = r + 0x52 + 4 * l
+        if l < levels:
+            lw, lh = sizes[l]
+            struct.pack_into("<HBb", buf, e, blocks, buffer_width(bpp, lw),
+                             1 if bpp != 32 and _swizzle_closes(lw, lh, bpp) else 0)
+            blocks += vram_blocks(bpp, lw, lh)
+        else:
+            struct.pack_into("<HBb", buf, e, 0, 0, 0)
+    struct.pack_into("<b", buf, r + 0x6E, levels - 1)
+    # the textures that show these pixels under another name take the same size
+    for o in read_textures(buf):
+        if o.parent == t.hash:
+            buf[o.rec_at + 0x24:o.rec_at + 0x30] = buf[r + 0x24:r + 0x30]
+            buf[o.rec_at + 0x38:o.rec_at + 0x3C] = buf[r + 0x38:r + 0x3C]
+            buf[o.rec_at + 0x44:o.rec_at + 0x4B] = buf[r + 0x44:r + 0x4B]
+            buf[o.rec_at + 0x52:o.rec_at + 0x6F] = buf[r + 0x52:r + 0x6F]
+            if not o.palette_size:
+                struct.pack_into("<HH", buf, o.rec_at + 0x2A, 0, 0)
+    for rec, at in pals.items():
+        struct.pack_into("<I", buf, rec + 0x34, at)
+        struct.pack_into("<I", buf, rec + 0x3C, 1024)
+        buf[rec + 0x4A] = PSM[bpp]
+    return bytes(buf)
+
+
+def replace(buf, t, rgba, bpp=None):
+    """The file `buf` with texture t's picture made rgba (h, w, 4, PNG alpha), of any size (and with bpp 8 a 4-bit texture
+    made 8-bit). The textures that show t's pixels under another name keep their colours: a copy of t's palette becomes
+    the new one, and a palette of their own (a dash or a wheel in other colours) is laid on the new indices by the
+    picture. Answers (new bytes, what was done)."""
+    if t.parent:
+        raise ValueError("%s borrows its pixels from another texture (hash %08x): change that one" % (t.name, t.parent))
+    h, w = rgba.shape[:2]
+    paletted = t.bpp in (4, 8)
+    old_idx = indices(t, buf) if paletted else None
+    old_pal = palette(t, buf) if paletted else None
+    kids = []
+    for k in read_textures(buf):
+        if k.parent == t.hash and k.palette_size and paletted:
+            kp = palette(k, buf)
+            kids.append((k.hash, "copy" if np.array_equal(kp, old_pal[:len(kp)]) else "own", kp))
+    resized = (w, h) != (t.width, t.height) or (bpp or t.bpp) != t.bpp
+    out = bytearray(resize(buf, t, w, h, bpp) if resized else buf)
+    t2 = next(x for x in read_textures(out) if x.rec_at == t.rec_at)
+    own = [kp for _, kind, kp in kids if kind == "own"]
+    if not kids or not paletted:
+        how = encode_into(out, t2, rgba)
+    else:
+        how = _encode_with_kids(out, t2, rgba, old_idx, old_pal, kids)
+    if resized:
+        how = "now %dx%d, %d-bit: %s" % (w, h, t2.bpp, how)
+    if kids and paletted:
+        how += "; %d textures sharing its pixels keep their colours%s" % (
+            len(kids), " (%d with colours of their own)" % len(own) if own else "")
+    return bytes(out), how
+
+
+def _encode_with_kids(out, t, rgba, old_idx, old_pal, kids):
+    """encode_into for a texture whose pixels others show with palettes of their own. The old indices where any of those
+    palettes differs from t's (a dash's colour patch, a wheel's tint) keep an entry each in the new palette, for the pixels
+    that had them, so every such texture keeps its own colour there; the rest of the picture takes the other entries.
+    Then every such palette is made again over the new indices."""
+    from PIL import Image
+    h, w = rgba.shape[:2]
+    if old_idx.shape != (h, w):
+        old_idx = np.array(Image.fromarray(old_idx.astype(np.uint8), "L").resize((w, h), Image.Resampling.NEAREST))
+    entries = len(palette(t, out))
+    differs = set()
+    for _, kind, kp in kids:
+        if kind == "own":
+            for o in range(min(len(kp), len(old_pal))):
+                if not np.array_equal(kp[o], old_pal[o]):
+                    differs.add(o)
+    present = set(np.unique(old_idx).tolist())
+    keep = sorted(o for o in differs if o in present)[:max(0, entries // 2)]
+    levels = _levels(rgba, t)
+    gs = [np.concatenate([l[..., :3], _to_gs_alpha(l[..., 3])[..., None]], -1).reshape(-1, 4) for l in levels]
+    flat_old = old_idx.reshape(-1)
+    mask = np.isin(flat_old, keep)
+    pal = np.zeros((entries, 4), np.uint8)
+    rest = entries - len(keep)
+    if (~mask).any():
+        p, idx_rest = _quantize(gs[0][~mask], rest)
+        pal[:rest] = p[:rest]
+    idx0 = np.zeros(len(flat_old), np.int64)
+    if (~mask).any():
+        idx0[~mask] = idx_rest
+    slot = {}
+    for j, o in enumerate(keep):
+        e = rest + j
+        slot[o] = e
+        m = flat_old == o
+        pal[e] = np.round(gs[0][m].astype(np.float64).mean(0)).astype(np.uint8)
+        idx0[m] = e
+    idxs = [idx0]
+    for lvl_img, (lvl, lw, lh, _, _) in zip(gs[1:], list(t.mips())[1:]):
+        o_l = np.array(Image.fromarray(old_idx.astype(np.uint8), "L").resize((lw, lh), Image.Resampling.NEAREST))
+        o_l = o_l.reshape(-1)
+        idx = _nearest(lvl_img, pal[:rest]) if rest else np.zeros(len(lvl_img), np.int64)
+        for o, e in slot.items():
+            idx[o_l == o] = e
+        idxs.append(idx)
+    _write_indexed(out, t, pal, idxs)
+    # every borrowing texture's palette over the new indices: the new palette, with its own colour at each kept index
+    # (elsewhere its palette was t's own colours, and those are the picture's now)
+    by_hash = {x.hash: x for x in read_textures(out)}
+    for hsh, kind, kp in kids:
+        k = by_hash[hsh]
+        kpal = pal.copy()
+        if kind == "own":
+            for o, e in slot.items():
+                if o < len(kp):
+                    kpal[e] = kp[o]
+        stored = np.zeros((k.palette_size // 4, 4), np.uint8)
+        stored[_clut_order(len(stored), k.bpp)] = kpal[:len(stored)]
+        out[k.base + k.palette_at:k.base + k.palette_at + k.palette_size] = stored.tobytes()
+    return "new palette, %d colours kept for the textures that share it" % len(keep) if keep else "new palette"
 
 
 def write_png(path, rgba):

@@ -70,7 +70,7 @@ class Stats:
     def texts(self, car, lang="ENGLISH"):
         ids, own = self.row_of(car)
         lf = self.langs.get(lang)
-        return {k: tx.to_text(lf.texts.get(i, b"")) if lf else "" for k, i in ids.items()}, own
+        return {k: tx.to_text(lf.texts.get(i, b""), lf.cyrillic) if lf else "" for k, i in ids.items()}, own
 
     def shared_with(self, car):
         """Other car types showing the same texts (by the fallback, or a shared row)."""
@@ -85,8 +85,8 @@ class Stats:
             i = ids.get(key)
             if i is None:
                 continue
-            b = tx.from_text(s)
             for lang, lf in self.langs.items():
+                b = tx.from_text(s, lf.cyrillic)
                 if i in lf.texts and lf.texts[i] != b:
                     lf.texts[i] = b
                     changed.add(lang)

@@ -8,6 +8,11 @@ the keys stay as they are when a text changes. The file is padded to 4 bytes; th
 
 Texts here are Unicode; the bytes 0x80..0x9F (the pad's button pictures) go as \\xNN, '@' is a new line in the game, and
 %s %d %c are filled in by the game.
+
+The Russian disc (a rebuilt USA disc): its FE_ENGLISH is Russian, for a font that has the Cyrillic letters at their
+Windows-1251 codes, 0xC0..0xFF, where the accented Latin ones were. Its texts take a Latin letter wherever one looks the
+same ("Bы пoлицeйcкий": B, o, e, c are Latin). LangFile.cyrillic says a table is of that kind; to_text and from_text then
+show and take Russian as it is written, and put the look-alike Latin letters back.
 """
 
 import csv
@@ -18,6 +23,10 @@ LANG_CHUNK = 0x00039000
 LANGUAGES = ("ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH", "SWEDISH")
 NUL = bytes(1)
 BACKSLASH = 0x5C
+# the Latin letters the Russian disc writes in place of Cyrillic ones
+ALIKE = dict(zip("ABEKMHOPCTXaeopcx", "АВЕКМНОРСТХаеорсх"))
+ALIKE_BACK = {c: l for l, c in ALIKE.items()}
+ALIKE_BACK.update({"Ё": "E", "ё": "e"})
 
 
 class LangFile:
@@ -34,6 +43,10 @@ class LangFile:
         self.id_table = [struct.unpack_from("<iI", buf, p + 8 * i) for i in range(ni)]
         p += 8 * ni
         self.pool = bytes(buf[p:p + tsize])
+        # most letters from 0xC0 up: Cyrillic (in the other languages the accented ones are a few in a hundred)
+        high = sum(1 for c in self.pool if c >= 0xC0)
+        letters = high + sum(1 for c in self.pool if 0x61 <= (c | 0x20) <= 0x7A)
+        self.cyrillic = letters > 1000 and high * 4 > letters
         self.last_nul = self.pool.endswith(NUL)
         by_off = {}
         for key, off in self.hash_table:
@@ -74,21 +87,40 @@ class LangFile:
         return bytes(body)
 
 
-def to_text(b):
-    """Game bytes -> a Unicode line for editing."""
+def _is_letter(c):
+    return c >= 0xC0 or 0x61 <= (c | 0x20) <= 0x7A
+
+
+def to_text(b, cyrillic=False):
+    """Game bytes -> a Unicode line for editing. cyrillic: a text of the Russian disc's table; in a word that has no Latin
+    letter but the look-alike ones, those are the Cyrillic letters they stand for."""
     out = []
-    for c in b:
+    alike = set()                   # the places of the Latin letters to show as Cyrillic
+    if cyrillic and any(c >= 0xC0 for c in b):
+        i = 0
+        while i < len(b):
+            e = i
+            while e < len(b) and _is_letter(b[e]):
+                e += 1
+            if e > i and all(c >= 0xC0 or chr(c) in ALIKE for c in b[i:e]):
+                alike.update(range(i, e))
+            i = max(e, i + 1)
+    for k, c in enumerate(b):
         if c == BACKSLASH:
             out.append("\\\\")
         elif 0x80 <= c <= 0x9F or c in (9, 10, 13):
             out.append("\\x%02X" % c)
+        elif cyrillic and c >= 0xC0:
+            out.append(chr(0x410 + c - 0xC0))
+        elif k in alike:
+            out.append(ALIKE[chr(c)])
         else:
             out.append(chr(c))
     return "".join(out)
 
 
-def from_text(s):
-    """And back; a character the game's Latin-1 has not is an error."""
+def from_text(s, cyrillic=False):
+    """And back; a character the game's Latin-1 (or, cyrillic, the Russian disc's font) has not is an error."""
     out = bytearray()
     i = 0
     while i < len(s):
@@ -105,7 +137,11 @@ def from_text(s):
             except ValueError:
                 pass
         o = ord(c)
-        if o > 0xFF:
+        if cyrillic and c in ALIKE_BACK:
+            o = ord(ALIKE_BACK[c])
+        elif cyrillic and 0x410 <= o <= 0x44F:
+            o = 0xC0 + o - 0x410
+        elif o > 0xFF or (cyrillic and o >= 0xC0):
             raise ValueError("%r: the game's font has no %r" % (s, c))
         out.append(o)
         i += 1
@@ -135,7 +171,7 @@ def export_tsv(data, path):
         w = csv.writer(f, delimiter="\t", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
         w.writerow(["id"] + langs)
         for i in ids:
-            w.writerow([i] + [to_text(files[l].texts.get(i, b"")) for l in langs])
+            w.writerow([i] + [to_text(files[l].texts.get(i, b""), files[l].cyrillic) for l in langs])
     return len(ids)
 
 
@@ -166,9 +202,12 @@ def apply(files, table):
             if i not in lf.texts:
                 lines.append("%s %d: no such text id, skipped (new ids are not possible)" % (lang, i))
                 continue
-            b = from_text(s)
+            was = to_text(lf.texts[i], lf.cyrillic)
+            if s == was:                # as it is shown: nothing to change (a Russian text need not come back to the same bytes)
+                continue
+            b = from_text(s, lf.cyrillic)
             if b != lf.texts[i]:
-                lines.append("%s %d: %s -> %s" % (lang, i, to_text(lf.texts[i])[:40], s[:40]))
+                lines.append("%s %d: %s -> %s" % (lang, i, was[:40], s[:40]))
                 lf.texts[i] = b
                 changed.add(lang)
     return changed, lines
@@ -199,4 +238,9 @@ def port_texts(data):
                 else:
                     own[a] = b
         out[f[:-4].upper()] = (over, own)
+    # the Russian disc's own file stands for its English slot, and only there (pclang.cpp)
+    ru = out.pop("RUSSIAN_DISC", None)
+    p = lang_path(data, "ENGLISH")
+    if ru and os.path.isfile(p) and LangFile(open(p, "rb").read()).cyrillic:
+        out["ENGLISH"] = ru
     return out

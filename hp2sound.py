@@ -289,23 +289,34 @@ class Speech:
         size = struct.unpack_from(">I", self.dat, s + 12)[0]
         return decode_mono(bytes(self.dat[s + 48:s + 48 + min(size, e - s - 48)]))
 
-    def replace(self, b, i, pcm, rate):
-        """A clip in: in its place when it fits, else its bank moves to the end of the DAT with the new clip."""
+    def _clip(self, b, i, pcm, rate):
+        """A clip's bytes (its 48-byte VAG header, the ADPCM) for pcm (n, ch) at rate."""
         pcm = resample(pcm, rate, SPEECH_RATE)
         mono = pcm.mean(1).astype(np.int16) if pcm.shape[1] > 1 else pcm[:, 0]
         data = encode_mono(mono)
         s, e = self.clip_range(b, i)
         head = bytearray(self.dat[s:s + 48]) if self.dat[s:s + 4] == b"VAGp" else bytearray(b"VAGp" + bytes(44))
         struct.pack_into(">I", head, 12, len(data))
-        clip = bytes(head) + data
-        if len(clip) <= e - s:
-            self.dat[s:e] = clip + bytes(e - s - len(clip))
-            return "in place"
+        return bytes(head) + data
+
+    def replace(self, b, i, pcm, rate):
+        """A clip in: in its place when it fits, else its bank moves to the end of the DAT with the new clip."""
+        return self.replace_many(b, {i: (pcm, rate)})
+
+    def replace_many(self, b, new):
+        """Clips of bank b in, {clip: (pcm, rate)}: each in its place when all of them fit, else the bank moves once to
+        the end of the DAT with all of them (a bank moved clip by clip would leave a copy of itself behind each time)."""
         bk = self.banks[b]
+        made = {i: self._clip(b, i, pcm, rate) for i, (pcm, rate) in new.items()}
+        if all(len(c) <= self.clip_range(b, i)[1] - self.clip_range(b, i)[0] for i, c in made.items()):
+            for i, c in made.items():
+                s, e = self.clip_range(b, i)
+                self.dat[s:e] = c + bytes(e - s - len(c))
+            return "in place"
         clips = []
         for k in range(bk.count):
             cs, ce = self.clip_range(b, k)
-            clips.append(clip if k == i else bytes(self.dat[cs:ce]))
+            clips.append(made[k] if k in made else bytes(self.dat[cs:ce]))
         new_base = len(self.dat) + ((-len(self.dat)) % 2048)
         self.dat += bytes(new_base - len(self.dat))
         pos = 0
@@ -339,3 +350,190 @@ def speech_languages(data):
 def speech_paths(data, lang):
     d = os.path.join(data, "SOUND", "SPEECH")
     return os.path.join(d, lang + "BAN.PCK"), os.path.join(d, lang + "DAT.PCK")
+
+
+# ---- many sounds at once ------------------------------------------------------------------------------------------------
+#
+# A folder of WAVs goes into one source (an effects bank, the music, a language's speech) by the names the export gives
+# them; a tree of such folders (Effects\<BANK>\, Music\, Speech\<LANGUAGE>\) goes into the whole game. A WAV that is the
+# sound as it is (an exported file left alone) is passed over: the ADPCM loses a little each time it is made again.
+
+def safe(s):
+    return "".join(c if c.isalnum() or c in "-_ ()." else "_" for c in s)
+
+
+def open_source(data, kind, name):
+    """(the object, its files) of a source: kind Effects (name a bank), Music, or Speech (name a language)."""
+    if kind == "Effects":
+        fs = list(bank_paths(data)[name])
+        return Bank(open(fs[0], "rb").read(), open(fs[1], "rb").read()), fs
+    if kind == "Music":
+        fs = [os.path.join(data, MUSIC)]
+        return Jukebox(open(fs[0], "rb").read()), fs
+    fs = list(speech_paths(data, name))
+    return Speech(open(fs[0], "rb").read(), open(fs[1], "rb").read()), fs
+
+
+def built(kind, obj):
+    """The source's files' new bytes, in the order of open_source's files."""
+    if kind == "Effects":
+        return list(obj.build())
+    if kind == "Music":
+        return [obj.build()]
+    return [bytes(obj.ban), bytes(obj.dat)]
+
+
+def sources(data):
+    """[(kind, name, the folder's path in a tree)] of the game's sounds."""
+    out = [("Effects", b, os.path.join("Effects", b)) for b in bank_paths(data)]
+    if os.path.isfile(os.path.join(data, MUSIC)):
+        out.append(("Music", "JUKEBOXM", "Music"))
+    out += [("Speech", lang, os.path.join("Speech", lang)) for lang in speech_languages(data)]
+    return out
+
+
+def items(kind, obj):
+    """[(key, file name without .wav, now)] of a source's sounds: now() is (pcm (n, ch) int16, rate) as the sound is; the
+    key is what its replace takes (an effect's patch indices, a tune's number, (bank, clip))."""
+    out = []
+    if kind == "Effects":
+        for n, idx in obj.sounds():
+            out.append((tuple(idx), safe(n), lambda idx=idx: (obj.pcm(idx), obj.patches[idx[0]].rate)))
+    elif kind == "Music":
+        for i in range(len(obj.tunes)):
+            n = obj.name(i)
+            out.append((i, safe("%02d %s" % (i, n.split("-")[1] if "-" in n else n)),
+                        lambda i=i: (obj.pcm(i), MUSIC_RATE)))
+    else:
+        for b, bk in enumerate(obj.banks):
+            for i in range(bk.count):
+                out.append(((b, i), "bank%04d_clip%02d" % (b, i),
+                            lambda b=b, i=i: (obj.pcm(b, i)[:, None], SPEECH_RATE)))
+    return out
+
+
+def export_source(kind, obj, folder, keys=None):
+    """A source's sounds (or those of keys) as WAVs into folder, named as import_folder reads them."""
+    os.makedirs(folder, exist_ok=True)
+    n = 0
+    for key, stem, now in items(kind, obj):
+        if keys is not None and key not in keys:
+            continue
+        pcm, rate = now()
+        mv.write_wav(os.path.join(folder, stem + ".wav"), pcm, rate)
+        n += 1
+    return n
+
+
+def _key_of(kind, stem, by_stem):
+    """The key a WAV's name stands for: the export's name, or for music its number, for speech its bank and clip."""
+    if stem in by_stem:
+        return by_stem[stem]
+    keys = set(by_stem.values())
+    if kind == "Music" and stem[:2].isdigit():
+        return int(stem[:2]) if int(stem[:2]) in keys else None
+    if kind == "Speech":
+        import re
+        m = re.match(r"bank0*(\d+)_clip0*(\d+)$", stem, re.I)
+        if m and (int(m.group(1)), int(m.group(2))) in keys:
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def import_folder(kind, obj, folder):
+    """The WAVs of a folder into a source's object, by name. Answers {"changed": [names], "same": [names], "unknown":
+    [file names], "bad": [(file name, why)]}."""
+    its = items(kind, obj)
+    by_stem = {stem: key for key, stem, _ in its}
+    now_of = {key: now for key, _, now in its}
+    name_of = {key: stem for key, stem, _ in its}
+    rep = {"changed": [], "same": [], "unknown": [], "bad": []}
+    speech = {}
+    for f in sorted(os.listdir(folder)):
+        if not f.lower().endswith(".wav"):
+            continue
+        key = _key_of(kind, os.path.splitext(f)[0], by_stem)
+        if key is None:
+            rep["unknown"].append(f)
+            continue
+        try:
+            pcm, rate = read_wav_any(os.path.join(folder, f))
+        except Exception as e:          # a WAV the reader does not take: said, and the others go on
+            rep["bad"].append((f, str(e)))
+            continue
+        old, old_rate = now_of[key]()
+        if rate == old_rate and pcm.shape == old.shape and np.array_equal(pcm, old):
+            rep["same"].append(name_of[key])
+            continue
+        if kind == "Effects":
+            obj.replace(list(key), pcm, rate)
+        elif kind == "Music":
+            obj.replace(key, pcm, rate)
+        else:
+            speech.setdefault(key[0], {})[key[1]] = (pcm, rate)
+        rep["changed"].append(name_of[key])
+    for b, clips in speech.items():
+        obj.replace_many(b, clips)
+    return rep
+
+
+def export_all(data, out, log=print):
+    """Every sound of the game into a tree: Effects\\<BANK>\\, Music\\, Speech\\<LANGUAGE>\\."""
+    total = 0
+    for kind, name, rel in sources(data):
+        obj, _ = open_source(data, kind, name)
+        n = export_source(kind, obj, os.path.join(out, rel))
+        log("%s: %d WAVs" % (rel, n))
+        total += n
+    log("%d WAVs -> %s" % (total, out))
+    return total
+
+
+def _find_dir(root, rel):
+    """root/rel, in any case of its letters, or None."""
+    here = root
+    for part in rel.replace("\\", "/").split("/"):
+        hit = None
+        if os.path.isdir(here):
+            for d in os.listdir(here):
+                if d.upper() == part.upper() and os.path.isdir(os.path.join(here, d)):
+                    hit = os.path.join(here, d)
+                    break
+        if hit is None:
+            return None
+        here = hit
+    return here
+
+
+def import_tree(data, root, write, log=print):
+    """A tree as export_all makes it (any part of it: one bank's folder is enough) into the game; write(path, bytes) puts
+    a file in. Answers the number of sounds changed."""
+    total = 0
+    for kind, name, rel in sources(data):
+        folder = _find_dir(root, rel)
+        if folder is None:
+            continue
+        obj, files = open_source(data, kind, name)
+        before = [os.path.getsize(p) for p in files]
+        rep = import_folder(kind, obj, folder)
+        for f in rep["unknown"]:
+            log("%s: %s is no sound of it" % (rel, f))
+        for f, why in rep["bad"]:
+            log("%s: %s: %s" % (rel, f, why))
+        if not rep["changed"]:
+            if rep["same"]:
+                log("%s: nothing changed (%d as they were)" % (rel, len(rep["same"])))
+            continue
+        new = built(kind, obj)
+        grew = ""
+        if kind == "Effects":
+            d = len(new[1]) - before[1]
+            if abs(d) >= 1024:
+                grew = "; the bank %s by %d KB (the sound chip has 2 MB for every bank loaded at once, and a race " \
+                       "leaves about 270 KB of it free)" % ("grows" if d > 0 else "shrinks", abs(d) // 1024)
+        log("%s: %d changed, %d as they were%s" % (rel, len(rep["changed"]), len(rep["same"]), grew))
+        for p, b in zip(files, new):
+            write(p, b)
+        total += len(rep["changed"])
+    log("%d sounds changed" % total)
+    return total

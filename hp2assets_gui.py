@@ -438,7 +438,45 @@ class App(tk.Tk):
                                            initialdir=self.settings.get("out"))
         if not pngs:
             return
-        a = SimpleNamespace(game=self.game.get(), file=rel, png=list(pngs), dry_run=False)
+        # pictures of another size: the texture takes the picture's size, if wanted
+        from PIL import Image
+        by_name = {}
+        for t in self.textures:
+            if not t.parent:
+                by_name.setdefault(t.name.upper(), t)
+        other, shallow = [], 0
+        for p in pngs:
+            t = by_name.get(os.path.splitext(os.path.basename(p))[0].partition("@")[0].upper())
+            if t is None:
+                continue
+            with Image.open(p) as im:
+                size = im.size
+            if size != (t.width, t.height):
+                big = not tex.fits(t, size[0], size[1])
+                other.append("%s: %dx%d -> %dx%d%s" % (t.name, t.width, t.height, size[0], size[1],
+                                                        "  (too big for the game: skipped)" if big else ""))
+                shallow += t.bpp == 4 and not big
+        resize, deep = True, False
+        if other:
+            ans = messagebox.askyesnocancel(
+                "Another size", "%d picture%s not the size of %s texture:\n\n%s%s\n\nGive the texture%s the picture's "
+                "size?\n\nThe file grows by the new pixels. The game keeps the PS2's memory: a race has about 5 MB "
+                "free for all the cars, so keep car textures to what you need. One texture may take up to 2048 "
+                "blocks of the game's texture memory: 1024 x 1024 at 16 colours, 1024 x 512 at 256.\n\n"
+                "No skips these pictures." % (
+                    len(other), " is" if len(other) == 1 else "s are", "its" if len(other) == 1 else "their",
+                    "\n".join(other[:8]), "\n..." if len(other) > 8 else "", "" if len(other) == 1 else "s"),
+                parent=self)
+            if ans is None:
+                return
+            resize = ans
+            if ans and shallow:
+                deep = messagebox.askyesno(
+                    "Colours", "%d of them %s 16 colours (4-bit). Make %s 256 colours (8-bit)?\n\nA bigger "
+                    "picture keeps more of its detail with 256 colours; the pixels take twice the room. One that would then "
+                    "pass what the game's texture memory takes keeps 16." % (
+                        shallow, "has" if shallow == 1 else "have", "it" if shallow == 1 else "them"), parent=self)
+        a = SimpleNamespace(game=self.game.get(), file=rel, png=list(pngs), dry_run=False, resize=resize, bpp8=deep)
         self.run("import %d PNGs into %s" % (len(pngs), rel), lambda: cli.cmd_import_textures(a),
                  lambda _: self.load_texture_file())
 
@@ -582,7 +620,11 @@ def selftest(game, out):
             import hp2track
             hp2movie.export_movie(os.path.join(data, "MOVIES", "INTRO", "EALOGO_EN.AVI"), os.path.join(out, "ealogo.avi"))
             for lang, lf in hp2text.load_all(data).items():
-                assert lf.build() == open(hp2text.lang_path(data, lang), "rb").read(), lang
+                raw, built = open(hp2text.lang_path(data, lang), "rb").read(), lf.build()
+                # a rebuilt disc's table (the Russian one's FE_ENGLISH) has bytes after its texts and a size that counts them:
+                # the same up to the end of the texts
+                end = 108 + 8 * (len(lf.hash_table) + len(lf.id_table)) + len(lf.pool)
+                assert built == raw or (built[:4] == raw[:4] and built[8:end] == raw[8:end]), lang
             print("texts: the six languages rebuild byte for byte")
             bank = hp2sound.load_bank(data, "FRONTEND")
             msh, msb = hp2sound.bank_paths(data)["FRONTEND"]

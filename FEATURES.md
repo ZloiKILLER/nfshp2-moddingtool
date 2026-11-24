@@ -1,6 +1,6 @@
 # Features
 
-What the NFSHP2 Modding suite 0.11 can change, tab by tab. Any change can be undone. The first change of a file keeps the
+What the NFSHP2 Modding suite 0.12 can change, tab by tab. Any change can be undone. The first change of a file keeps the
 disc's version as `<file>.orig`, and **Restore the disc's** in the tab of that file puts it back. The Experimental tab
 writes car, texture, physics and text files, so its changes are undone in the Cars, Textures, Car physics and Texts tabs.
 
@@ -37,7 +37,13 @@ writes car, texture, physics and text files, so its changes are undone in the Ca
 
 - Every picture of a file goes out as PNG and comes back by name. This covers the cars' skins and lights, the shared
   car pictures (windows, tyres, plates, brakes), the menus, the HUD and the tracks.
-- A picture keeps its size and its format (4 or 8 bits with a palette, or 32 bits).
+- A picture of the texture's size keeps its format (4 or 8 bits with a palette, or 32 bits).
+- A picture of another size gives the texture that size. A 16-colour texture can become 256-colour on the way, so a
+  bigger picture keeps its detail.
+- One texture may take as much of the game's texture memory as the largest on the disc: 1024 x 1024 at 16 colours,
+  1024 x 512 at 256. A bigger one is refused, and 256 colours that would not fit stay 16.
+- Textures that show the same pixels under other names keep their colours. These are an HP version's or a dash in
+  other colours.
 - A PNG drawn with the palette's own colours stays exact. Any other picture gets a new palette and new mip levels.
 
 ## Tracks
@@ -91,6 +97,12 @@ size by itself.
 - **Speech**: the commentary and the police radio, in each language.
 - Play any sound, export it as WAV, or replace it with your own WAV (any rate, 8 to 32 bits). It is converted to the
   game's format, rate and channels by itself. A replaced effect loops if the original did.
+- **Many at once**: export a bank, the music or a language's speech, change the WAVs you want, and import the folder:
+  every WAV goes back into the sound of its name.
+- **All the game's sound** as one tree of folders (`Effects\<BANK>`, `Music`, `Speech\<LANGUAGE>`). Export it whole, and
+  import such a tree, or any part of it, in one go: a sound mod for many banks goes in in one step.
+- WAVs left as they were exported are passed over, since every new encoding loses a little. The import names the files
+  that match no sound and says how much each effects bank grows.
 
 ## Movies
 
@@ -131,7 +143,8 @@ Every file of the installed game with what it is and its status:
 
 ## Limits
 
-- Textures keep their sizes. New textures cannot be added.
+- New textures cannot be added. A bigger texture makes its file bigger, and the game keeps the PS2's memory, so
+  keep car textures to what you need.
 - A car part holds at most 32,767 strip vertices (a body of about 20,000 triangles).
 - The game keeps the PS2's memory. A race leaves about 5 MB free for all the cars together, and a track takes up to
   about 16 MB with its textures.
