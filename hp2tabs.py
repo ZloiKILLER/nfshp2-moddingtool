@@ -846,7 +846,8 @@ class SoundTab:
         else:
             self.obj = self.so.Speech(open(fs[0], "rb").read(), open(fs[1], "rb").read())
             for b, bk in enumerate(self.obj.banks):
-                gid = self.tree.insert("", "end", iid="b%d" % b, text="bank %d" % b, values=("", "", "%d clips" % bk.count))
+                gid = self.tree.insert("", "end", iid="b%d" % b, text=("bank %d  %s" % (b, self.obj.name(b))).strip(),
+                                       values=("", "", "%d clips" % bk.count))
                 for i in range(bk.count):
                     s, e = self.obj.clip_range(b, i)
                     secs = max(0, e - s - 48) / 16 * 28 / self.so.SPEECH_RATE

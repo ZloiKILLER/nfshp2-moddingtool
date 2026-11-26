@@ -90,6 +90,10 @@ def read_wav_any(path):
     import wave
     with wave.open(path, "rb") as w:
         ch, width, r, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+        if width == 2 and ch in (1, 2):
+            # the usual one, and every one the export writes: the samples as they are, no arithmetic (a mass import
+            # reads tens of thousands of these)
+            return np.frombuffer(w.readframes(n), "<i2").reshape(-1, ch).copy(), r
     pcm = mv.read_wav(path, r)          # 2 channels, at its own rate
     if ch == 1:
         pcm = pcm[:, :1]
@@ -273,6 +277,40 @@ class Speech:
         n = struct.unpack_from("<I", ban, 0)[0]
         self.n = n
         self.banks = [SpeechBank(self.ban, n, e) for e in range(n)]
+        self._read_names()
+
+    # The DAT ends in the table its packer left: u32 count, then for each bank u32 n, n bytes (its file's name, a NUL,
+    # and what was left of the path in the buffer), u32 size, u32 size, u32 offset; it starts where the last bank ends.
+    # The game goes by the BAN; the table gives the banks their names ("19AddPrime", "CarDa"...), by offset.
+    def _read_names(self):
+        self.names, self.table = {}, None
+        if not self.banks:
+            return
+        start = max(bk.base + bk.end * bk.unit for bk in self.banks)
+        d = self.dat
+        try:
+            count, = struct.unpack_from("<I", d, start)
+            p, rows = start + 4, []
+            for _ in range(count):
+                ln, = struct.unpack_from("<I", d, p)
+                block = bytes(d[p + 4:p + 4 + ln])
+                size, size2, off = struct.unpack_from("<III", d, p + 4 + ln)
+                rows.append([block, size, size2, off])
+                p += 16 + ln
+        except struct.error:
+            return
+        if p != len(d) or not 0 < count < 100000:
+            return
+        self.table = (start, rows)
+        by_off = {r[3]: r for r in rows}
+        for b, bk in enumerate(self.banks):
+            r = by_off.get(bk.base)
+            if r is not None:
+                n = r[0].split(b"\0")[0].decode("latin-1")
+                self.names[b] = n[:-4] if n.lower().endswith(".dat") else n
+
+    def name(self, b):
+        return self.names.get(b, "")
 
     def clip_range(self, b, i):
         """(start, slot end) of clip i of bank b in the DAT."""
@@ -317,6 +355,11 @@ class Speech:
         for k in range(bk.count):
             cs, ce = self.clip_range(b, k)
             clips.append(made[k] if k in made else bytes(self.dat[cs:ce]))
+        # the name table comes off the end and goes back after the moved bank, its row for the bank following it
+        table = self.table
+        if table is not None:
+            del self.dat[table[0]:]
+        old_base = bk.base
         new_base = len(self.dat) + ((-len(self.dat)) % 2048)
         self.dat += bytes(new_base - len(self.dat))
         pos = 0
@@ -327,6 +370,20 @@ class Speech:
             pos += len(c) + ((-len(c)) % bk.unit)
         if pos // bk.unit > 0xFFFF:
             raise SystemExit("the bank would be too long")
+        if table is not None:
+            rows = table[1]
+            for r in rows:
+                if r[3] == old_base:
+                    same = r[1] == r[2]
+                    r[1], r[3] = pos, new_base
+                    if same:
+                        r[2] = pos
+            at = len(self.dat)
+            out = bytearray(struct.pack("<I", len(rows)))
+            for block, size, size2, off in rows:
+                out += struct.pack("<I", len(block)) + block + struct.pack("<III", size, size2, off)
+            self.dat += out
+            self.table = (at, rows)
         for k, o in enumerate(offs):
             struct.pack_into(">H", self.ban, bk.ban_off + 12 + k * (2 + bk.npar), (bk.offsets[k] & 0x8000) | o)
         struct.pack_into("<H", self.ban, bk.ban_off + 8, pos // bk.unit)
@@ -407,21 +464,57 @@ def items(kind, obj):
     else:
         for b, bk in enumerate(obj.banks):
             for i in range(bk.count):
-                out.append(((b, i), "bank%04d_clip%02d" % (b, i),
+                nm = safe(obj.name(b)).replace("_", "-")
+                out.append(((b, i), ("bank%04d_%s_clip%02d" % (b, nm, i)) if nm else "bank%04d_clip%02d" % (b, i),
                             lambda b=b, i=i: (obj.pcm(b, i)[:, None], SPEECH_RATE)))
     return out
 
 
+SUMS = "hp2sums.json"       # beside the WAVs an export writes: {name: [sha1 of the WAV file, sha1 of the sound's data]}
+
+
+def _sha(b):
+    import hashlib
+    return hashlib.sha1(b).hexdigest()
+
+
+def raw_of(kind, obj, key):
+    """The bytes the game has for a sound (its ADPCM and what sets how it plays): equal bytes, equal sound."""
+    if kind == "Effects":
+        return b"".join(bytes(obj.audio[i]) + struct.pack("<H", obj.patches[i].rate) for i in key)
+    if kind == "Music":
+        return bytes(obj.tunes[key][2])
+    s, e = obj.clip_range(*key)
+    return bytes(obj.dat[s:e])
+
+
+def _load_sums(folder):
+    import json
+    try:
+        with open(os.path.join(folder, SUMS), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def export_source(kind, obj, folder, keys=None):
-    """A source's sounds (or those of keys) as WAVs into folder, named as import_folder reads them."""
+    """A source's sounds (or those of keys) as WAVs into folder, named as import_folder reads them, and their sums in
+    SUMS: an import then knows a WAV left as it was without decoding the game's sound to compare."""
+    import json
     os.makedirs(folder, exist_ok=True)
+    sums = _load_sums(folder)
     n = 0
     for key, stem, now in items(kind, obj):
         if keys is not None and key not in keys:
             continue
         pcm, rate = now()
-        mv.write_wav(os.path.join(folder, stem + ".wav"), pcm, rate)
+        p = os.path.join(folder, stem + ".wav")
+        mv.write_wav(p, pcm, rate)
+        with open(p, "rb") as f:
+            sums[stem] = [_sha(f.read()), _sha(raw_of(kind, obj, key))]
         n += 1
+    with open(os.path.join(folder, SUMS), "w", encoding="utf-8") as f:
+        json.dump(sums, f, indent=0, sort_keys=True)
     return n
 
 
@@ -434,7 +527,8 @@ def _key_of(kind, stem, by_stem):
         return int(stem[:2]) if int(stem[:2]) in keys else None
     if kind == "Speech":
         import re
-        m = re.match(r"bank0*(\d+)_clip0*(\d+)$", stem, re.I)
+        # bank0003_clip00 (before the banks had names) or bank0003_19AddPrime_clip00: the numbers are what count
+        m = re.match(r"bank0*(\d+)(?:_[^_]*)?_clip0*(\d+)$", stem, re.I)
         if m and (int(m.group(1)), int(m.group(2))) in keys:
             return int(m.group(1)), int(m.group(2))
     return None
@@ -449,13 +543,22 @@ def import_folder(kind, obj, folder):
     name_of = {key: stem for key, stem, _ in its}
     rep = {"changed": [], "same": [], "unknown": [], "bad": []}
     speech = {}
+    sums = _load_sums(folder)
     for f in sorted(os.listdir(folder)):
         if not f.lower().endswith(".wav"):
             continue
-        key = _key_of(kind, os.path.splitext(f)[0], by_stem)
+        stem = os.path.splitext(f)[0]
+        key = _key_of(kind, stem, by_stem)
         if key is None:
             rep["unknown"].append(f)
             continue
+        # the WAV as the export wrote it, of the sound as it still is: the same, with nothing decoded
+        s = sums.get(stem)
+        if s and s[1] == _sha(raw_of(kind, obj, key)):
+            with open(os.path.join(folder, f), "rb") as fh:
+                if _sha(fh.read()) == s[0]:
+                    rep["same"].append(name_of[key])
+                    continue
         try:
             pcm, rate = read_wav_any(os.path.join(folder, f))
         except Exception as e:          # a WAV the reader does not take: said, and the others go on

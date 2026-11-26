@@ -423,39 +423,57 @@ def resize(buf, t, w, h, bpp=None):
     return bytes(buf)
 
 
-def replace(buf, t, rgba, bpp=None):
+def replace(buf, t, rgba, bpp=None, textures=None):
     """The file `buf` with texture t's picture made rgba (h, w, 4, PNG alpha), of any size (and with bpp 8 a 4-bit texture
     made 8-bit). The textures that show t's pixels under another name keep their colours: a copy of t's palette becomes
     the new one, and a palette of their own (a dash or a wheel in other colours) is laid on the new indices by the
-    picture. Answers (new bytes, what was done)."""
+    picture. Answers (the file, what was done): at the same size a bytearray buf is written in place and answered as
+    it is (no copy of a 15 MB pack per picture); a new size answers new bytes, after which the textures must be read
+    again. textures: the file's, read already (else they are read here)."""
     if t.parent:
         raise ValueError("%s borrows its pixels from another texture (hash %08x): change that one" % (t.name, t.parent))
     h, w = rgba.shape[:2]
+    resized = (w, h) != (t.width, t.height) or (bpp or t.bpp) != t.bpp
+    # the picture as it is: nothing to do (a texture that others share was encoded again here, and lost a little)
+    if not resized:
+        old = decode(t, buf)
+        if old is not None and np.array_equal(old, rgba):
+            return buf, "unchanged"
     paletted = t.bpp in (4, 8)
     old_idx = indices(t, buf) if paletted else None
     old_pal = palette(t, buf) if paletted else None
     kids = []
-    for k in read_textures(buf):
+    for k in (textures if textures is not None else read_textures(buf)):
         if k.parent == t.hash and k.palette_size and paletted:
             kp = palette(k, buf)
             kids.append((k.hash, "copy" if np.array_equal(kp, old_pal[:len(kp)]) else "own", kp))
-    resized = (w, h) != (t.width, t.height) or (bpp or t.bpp) != t.bpp
-    out = bytearray(resize(buf, t, w, h, bpp) if resized else buf)
-    t2 = next(x for x in read_textures(out) if x.rec_at == t.rec_at)
+    if resized:
+        out = bytearray(resize(buf, t, w, h, bpp))
+        all_new = read_textures(out)
+        t2 = next(x for x in all_new if x.rec_at == t.rec_at)
+    else:
+        out = buf if isinstance(buf, bytearray) else bytearray(buf)
+        all_new, t2 = textures, t
     own = [kp for _, kind, kp in kids if kind == "own"]
+    if kids and paletted and not resized:
+        # made only of the palette's colours: the palette stays, each index means what it did, the others keep theirs
+        kept = set(map(bytes, old_pal))
+        gs = np.concatenate([rgba[..., :3], _to_gs_alpha(rgba[..., 3])[..., None]], -1).reshape(-1, 4)
+        if all(bytes(c) in kept for c in np.unique(gs, axis=0)):
+            return out, encode_into(out, t2, rgba)
     if not kids or not paletted:
         how = encode_into(out, t2, rgba)
     else:
-        how = _encode_with_kids(out, t2, rgba, old_idx, old_pal, kids)
+        how = _encode_with_kids(out, t2, rgba, old_idx, old_pal, kids, all_new)
     if resized:
         how = "now %dx%d, %d-bit: %s" % (w, h, t2.bpp, how)
     if kids and paletted:
         how += "; %d textures sharing its pixels keep their colours%s" % (
             len(kids), " (%d with colours of their own)" % len(own) if own else "")
-    return bytes(out), how
+    return out, how
 
 
-def _encode_with_kids(out, t, rgba, old_idx, old_pal, kids):
+def _encode_with_kids(out, t, rgba, old_idx, old_pal, kids, textures=None):
     """encode_into for a texture whose pixels others show with palettes of their own. The old indices where any of those
     palettes differs from t's (a dash's colour patch, a wheel's tint) keep an entry each in the new palette, for the pixels
     that had them, so every such texture keeps its own colour there; the rest of the picture takes the other entries.
@@ -503,7 +521,7 @@ def _encode_with_kids(out, t, rgba, old_idx, old_pal, kids):
     _write_indexed(out, t, pal, idxs)
     # every borrowing texture's palette over the new indices: the new palette, with its own colour at each kept index
     # (elsewhere its palette was t's own colours, and those are the picture's now)
-    by_hash = {x.hash: x for x in read_textures(out)}
+    by_hash = {x.hash: x for x in (textures if textures is not None else read_textures(out))}
     for hsh, kind, kp in kids:
         k = by_hash[hsh]
         kpal = pal.copy()

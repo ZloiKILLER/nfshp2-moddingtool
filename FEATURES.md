@@ -1,6 +1,6 @@
 # Features
 
-What the NFSHP2 Modding suite 0.12 can change, tab by tab. Any change can be undone. The first change of a file keeps the
+What the NFSHP2 Modding suite 0.13 can change, tab by tab. Any change can be undone. The first change of a file keeps the
 disc's version as `<file>.orig`, and **Restore the disc's** in the tab of that file puts it back. The Experimental tab
 writes car, texture, physics and text files, so its changes are undone in the Cars, Textures, Car physics and Texts tabs.
 
@@ -94,7 +94,7 @@ size by itself.
 - **Effects**: 26 banks, among them the menu, the race, the regions and an engine bank for each car (12 engine loops and
   the horn).
 - **Music**: the 23 tunes of the EA TRAX jukebox. A tune can be any length.
-- **Speech**: the commentary and the police radio, in each language.
+- **Speech**: the commentary and the police radio, in each language, every bank by its name (`19AddPrime`, `CarDa`...).
 - Play any sound, export it as WAV, or replace it with your own WAV (any rate, 8 to 32 bits). It is converted to the
   game's format, rate and channels by itself. A replaced effect loops if the original did.
 - **Many at once**: export a bank, the music or a language's speech, change the WAVs you want, and import the folder:

@@ -342,7 +342,7 @@ def cmd_export_textures(a):
 def cmd_import_textures(a):
     data = data_dir(a.game)
     path = resolve(data, a.file)
-    buf = bytes(open(path, "rb").read())
+    buf = bytearray(open(path, "rb").read())
     size0 = len(buf)
     resize_ok = getattr(a, "resize", True)
     deep = getattr(a, "bpp8", False)
@@ -353,19 +353,26 @@ def cmd_import_textures(a):
         else:
             pngs.append(p)
     changed = 0
+    # the table is read once, and again only after a texture took a new size (that moves what follows its pack)
+    textures = tex.read_textures(buf)
+    by_name, by_hash = {}, {}
+    for t in textures:
+        if not t.parent:
+            by_name.setdefault(t.name.upper(), []).append(t.hash)
+            by_hash.setdefault(t.hash, []).append(t.hash)
     for p in pngs:
         stem = os.path.splitext(os.path.basename(p))[0]
         name, _, h = stem.partition("@")
         match = lambda t: ((t.name.upper() == name.upper() or t.hash == core.bhash(name))
                            and (not h or "%08x" % t.hash == h.lower()) and not t.parent)
-        hits = [t.hash for t in tex.read_textures(buf) if match(t)]
+        cands = set(by_name.get(name.upper(), [])) | set(by_hash.get(core.bhash(name), []))
+        hits = sorted(x for x in cands if not h or "%08x" % x == h.lower())
         if not hits:
             print("%s: no texture %s in %s" % (os.path.basename(p), stem, a.file))
             continue
         rgba = tex.read_png(p)
         for hsh in hits:
-            # read again each time: a texture of a new size moves what follows it
-            t = next(x for x in tex.read_textures(buf) if x.hash == hsh and match(x))
+            t = next(x for x in textures if x.hash == hsh and match(x))
             other_size = (rgba.shape[1], rgba.shape[0]) != (t.width, t.height)
             if other_size and not resize_ok:
                 print("%s: %s is %dx%d, the picture %dx%d (without --keep-size the texture takes the picture's size)" % (
@@ -377,10 +384,13 @@ def cmd_import_textures(a):
                     t.name, rgba.shape[1], rgba.shape[0]))
                 want = None
             try:
-                buf, how = tex.replace(buf, t, rgba, want)
+                new, how = tex.replace(buf, t, rgba, want, textures)
             except ValueError as e:
                 print("%s: %s" % (os.path.basename(p), e))
                 continue
+            if new is not buf:
+                buf = new
+                textures = tex.read_textures(buf)
             if how != "unchanged":
                 changed += 1
                 print("%s: %s" % (t.name, how))
