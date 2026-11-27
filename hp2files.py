@@ -56,7 +56,7 @@ def _strings(b, n=2):
 
 
 def requested(data, log=None):
-    """The hashes of every name the game can ask the disc for, as far as its program and its records say."""
+    """{hash: name} of every name the game can ask the disc for, as far as its program and its records say."""
     elf = open(os.path.join(data, "SLUS_203.62"), "rb").read()
     strs = _strings(elf, 2)
     words = set(w for s in strs for w in re.findall(r"[A-Za-z0-9_ ]{1,40}", s))
@@ -106,11 +106,11 @@ def requested(data, log=None):
             names.add("NIS\\" + w + ".bin")
             names.add("NIS\\" + w + ".cam")
             names.add("REPLAY\\" + w)
-    out = set()
-    for n in names:
+    out = {}
+    for n in sorted(names):
         for v in (n, n.upper()):
             try:
-                out.add(core.bhash(v))
+                out.setdefault(core.bhash(v), v)
             except UnicodeEncodeError:
                 pass
     if log:
@@ -118,9 +118,18 @@ def requested(data, log=None):
     return out
 
 
+def real_name(rel, h, asked):
+    """The name the game asks for a file that the install keeps by its hash (unnamed_<hash>...), or None."""
+    if "UNNAMED" not in rel.upper() and not rel.upper().startswith("UNKNOWN/"):
+        return None
+    n = asked.get(h)
+    return n.replace("\\", "/") if isinstance(asked, dict) and n else None
+
+
 class Entry:
     def __init__(self, rel, size, status, kind, tab):
         self.rel, self.size, self.status, self.kind, self.tab = rel, size, status, kind, tab
+        self.real = None            # the name the game asks for it, when the install keeps it by its hash
 
 
 def survey(data, log=None):
@@ -160,7 +169,10 @@ def survey(data, log=None):
                 status = "unused: " + DEAD.get(rel.upper(), "no name the game builds hashes to it")
             else:
                 status = "not seen in the port's runs (may be used: cut-scenes, regions, demos)"
-            out.append(Entry(rel, size, status, kind, tab))
+            e = Entry(rel, size, status, kind, tab)
+            # a file the install keeps by its hash (no name was known to it), named by what the game asks for
+            e.real = next((real_name(rel, h, asked) for h in (hs or ()) if real_name(rel, h, asked)), None)
+            out.append(e)
     return out
 
 

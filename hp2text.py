@@ -21,6 +21,10 @@ import struct
 
 LANG_CHUNK = 0x00039000
 LANGUAGES = ("ENGLISH", "FRENCH", "GERMAN", "ITALIAN", "SPANISH", "SWEDISH")
+# and the two the game's debug languages read: every text's number in its place (FE_ID), and for every text the longest
+# of its translations (FE_LONGEST, to see that the menus hold them). The program asks for both; the stats editor and
+# the port's translations leave them alone
+TABLES = LANGUAGES + ("ID", "LONGEST")
 NUL = bytes(1)
 BACKSLASH = 0x5C
 # the Latin letters the Russian disc writes in place of Cyrillic ones
@@ -152,10 +156,10 @@ def lang_path(data, lang):
     return os.path.join(data, "LANGUAGES", "FE_%s.lang" % lang)
 
 
-def load_all(data):
-    """{LANGUAGE: LangFile} of the game's six."""
+def load_all(data, tables=LANGUAGES):
+    """{LANGUAGE: LangFile} of the game's six (or of tables: TABLES for the debug ones too)."""
     out = {}
-    for lang in LANGUAGES:
+    for lang in tables:
         p = lang_path(data, lang)
         if os.path.isfile(p):
             out[lang] = LangFile(open(p, "rb").read())
@@ -164,8 +168,8 @@ def load_all(data):
 
 def export_tsv(data, path):
     """One row an id: id, then the six languages. UTF-8 with a BOM, so Excel opens it right."""
-    files = load_all(data)
-    langs = [l for l in LANGUAGES if l in files]
+    files = load_all(data, TABLES)
+    langs = [l for l in TABLES if l in files]
     ids = sorted(files[langs[0]].texts)
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, delimiter="\t", quoting=csv.QUOTE_MINIMAL, lineterminator="\n")

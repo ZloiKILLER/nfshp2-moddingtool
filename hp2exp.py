@@ -95,6 +95,79 @@ class ExperimentalTab:
             "The texts go into all six languages. Every\nnumber of the physics is in the Car physics tab.")).pack(
             anchor="w")
 
+        # ---- a disc image of the game as it is now
+        disc = ttk.Frame(inner, padding=8)
+        inner.add(disc, text="Disc image")
+        ttk.Label(disc, justify="left", text=(
+            "A disc image of the game with every change made here, for PCSX2, OPL or a disc for a PS2. The original "
+            "image\ngives the boot files, the PS2 logo and the system modules; the game's archive is made again from "
+            "the installed game.")).pack(anchor="w")
+        g = ttk.Frame(disc)
+        g.pack(anchor="w", pady=8, fill="x")
+        self.iso_src, self.iso_dst = tk.StringVar(value=app.settings.get("iso", "")), tk.StringVar()
+        for r, (title, var, cmd) in enumerate((("The original image (.iso):", self.iso_src, self.pick_iso_src),
+                                               ("The new image:", self.iso_dst, self.pick_iso_dst))):
+            ttk.Label(g, text=title).grid(row=r, column=0, sticky="w", pady=2)
+            ttk.Entry(g, textvariable=var, width=80).grid(row=r, column=1, sticky="we", padx=6)
+            ttk.Button(g, text="Browse…", command=cmd).grid(row=r, column=2)
+        ttk.Button(disc, text="Make the image", command=self.make_iso).pack(anchor="w", pady=(4, 8))
+        ttk.Label(disc, justify="left", foreground="#666", text=(
+            "The original must be the disc the game was installed from; it is only read. What goes in is the game's own "
+            "files: the port's\ntranslations, its menu pages and its settings stay in the port. Textures of a new size are "
+            "not recommended on a disc yet\n(they are named before the image is made); models much denser than the "
+            "game's own may lose parts of a frame "
+            "on a PS2, where the port has room to spare.\nThe image is read back and checked when it is made. Try it in "
+            "PCSX2 before you burn a disc.")).pack(anchor="w")
+
+    # ---- the disc image
+    def pick_iso_src(self):
+        p = filedialog.askopenfilename(title="The original disc image", filetypes=[("Disc image", "*.iso")])
+        if p:
+            self.iso_src.set(p)
+            if not self.iso_dst.get():
+                base = os.path.splitext(p)[0]
+                self.iso_dst.set(base + " (modded).iso")
+
+    def pick_iso_dst(self):
+        p = filedialog.asksaveasfilename(title="The new disc image", defaultextension=".iso",
+                                         filetypes=[("Disc image", "*.iso")])
+        if p:
+            self.iso_dst.set(p)
+
+    def make_iso(self):
+        from tkinter import messagebox
+        import hp2iso
+        src, dst = self.iso_src.get().strip(), self.iso_dst.get().strip()
+        if not src or not os.path.isfile(src):
+            return self.app.say("choose the original disc image")
+        if not dst:
+            return self.app.say("choose where the new image goes")
+        if os.path.abspath(src) == os.path.abspath(dst):
+            return self.app.say("the new image must be another file than the original")
+        if os.path.exists(dst) and not messagebox.askyesno("Disc image", "%s is there already. Replace it?" % dst,
+                                                           parent=self.app):
+            return
+        self.app.settings["iso"] = src
+        self.app.save()
+        data = self.app.data()
+
+        def work():
+            for line in hp2iso.ps2_warnings(data):
+                print("warning: " + line)
+            rep = hp2iso.build(src, data, dst, log=print)
+            bad = hp2iso.check(dst, data, log=print)
+            if rep["over_dvd5"]:
+                print("warning: the image is larger than a single-layer DVD (4.38 GB): fine for PCSX2 and OPL, a "
+                      "dual-layer disc to burn")
+            return bad
+
+        def done(bad):
+            if bad is None:
+                return
+            self.app.say("the disc image is made: %s%s" % (dst, "" if not bad else
+                                                             " - BUT %d files did not read back right" % bad))
+        self.app.run("make a disc image", work, done)
+
     # ---- the other game's cars
     def browse(self):
         d = filedialog.askdirectory(title="The game's folder (with its program and CARS)")

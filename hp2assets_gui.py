@@ -114,7 +114,7 @@ class App(tk.Tk):
         self.build_cars(nb)
         self.build_textures(nb)
         self.tabs = []
-        for cls in (tabs.TracksTab, tabs.PhysicsTab, tabs.TextsTab, tabs.ScreensTab, tabs.SoundTab, tabs.MoviesTab, exp.ExperimentalTab,
+        for cls in (tabs.TracksTab, tabs2.ModelsTab, tabs.PhysicsTab, tabs.TextsTab, tabs.ScreensTab, tabs.SoundTab, tabs.MoviesTab, exp.ExperimentalTab,
                     tabs2.FilesTab):
             self.tabs.append(cls(self, nb))
         logf = ttk.Frame(body)
@@ -652,6 +652,9 @@ def selftest(game, out):
             if places:
                 print("track ground: %d polygons; start place 1 at %.1f %.1f, ground %s" % (
                     ground.n, places[0][0], places[0][1], ground.elevation(places[0][0], places[0][1])))
+            import hp2models
+            mf = hp2models.files(data)
+            print("models: %s" % ", ".join("%s %d" % (rel, len(hp2models.load(data, rel).solids())) for rel, _ in mf))
             import ctypes
             try:
                 ctypes.windll.comctl32.TaskDialog

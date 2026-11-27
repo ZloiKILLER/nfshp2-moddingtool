@@ -5,6 +5,155 @@ import tkinter as tk
 from tkinter import ttk
 
 
+class ModelsTab:
+    """The models outside the cars and the tracks (hp2models): the cars' dashboards, the menus' and the race's models, the
+    cut-scenes' people. View them, export them as OBJ with their pictures, import an OBJ back."""
+
+    def __init__(self, app, nb):
+        import hp2models as mdl
+        self.app, self.mdl = app, mdl
+        self.track = None
+        f = ttk.Frame(nb, padding=6)
+        nb.add(f, text="Models")
+        row = ttk.Frame(f)
+        row.pack(fill="x")
+        ttk.Label(row, text="File:").pack(side="left")
+        self.file = ttk.Combobox(row, state="readonly", width=34)
+        self.file.pack(side="left", padx=4)
+        self.file.bind("<<ComboboxSelected>>", lambda e: self.open_file())
+        self.what = ttk.Label(row, text="")
+        self.what.pack(side="left", padx=8)
+        main = ttk.Frame(f)
+        main.pack(fill="both", expand=True, pady=6)
+        cols = (("tris", "triangles"), ("verts", "vertices"), ("pics", "pictures"))
+        self.tree = ttk.Treeview(main, columns=[c for c, _ in cols], selectmode="extended")
+        self.tree.heading("#0", text="model")
+        self.tree.column("#0", width=260)
+        for (c, t), w in zip(cols, (90, 90, 420)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor="e" if c != "pics" else "w")
+        sb = ttk.Scrollbar(main, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+        self.tree.bind("<Double-1>", lambda e: self.view())
+        btns = ttk.Frame(main, padding=(8, 0))
+        btns.pack(side="left", fill="y")
+        ttk.Button(btns, text="View", command=self.view).pack(fill="x", pady=2)
+        ttk.Button(btns, text="Export OBJ…", command=self.export).pack(fill="x", pady=(16, 2))
+        ttk.Button(btns, text="Import OBJ…", command=self.import_obj).pack(fill="x", pady=2)
+        ttk.Button(btns, text="Restore the disc's", command=self.restore).pack(fill="x", pady=(16, 2))
+        ttk.Label(f, justify="left", foreground="#666", text=(
+            "View shows the chosen models (all when none is chosen). Export writes the file's models as one OBJ, each its "
+            "own object, with its .mtl and pictures;\nimport it back after editing: the models it names are rebuilt, any "
+            "shape, the others stay byte for byte. The pictures are in the Textures tab.")).pack(anchor="w")
+
+    def load(self):
+        try:
+            data = self.app.data()
+        except SystemExit:
+            return
+        self.files = self.mdl.files(data)
+        self.file["values"] = [rel + ("  *" if os.path.exists(os.path.join(data, rel) + ".orig") else "")
+                               for rel, _ in self.files]
+        if self.files and not self.file.get():
+            self.file.current(0)
+        self.open_file()
+
+    def rel(self):
+        return self.file.get().rstrip(" *")
+
+    def open_file(self):
+        rel = self.rel()
+        if not rel:
+            return
+        data = self.app.data()
+        self.what.configure(text=dict(self.files).get(rel, ""))
+        self.track = self.mdl.load(data, rel)
+        self.names, self.packs = self.mdl.pictures(data, rel)
+        self.tree.delete(*self.tree.get_children())
+        for s in self.track.solids():
+            tris = sum(len(st.triangles()) for st in s.strips)
+            verts = sum(len(st.verts) for st in s.strips)
+            pics = sorted({self.names.get(h, "H%08X" % h) for h in s.textures})
+            self.tree.insert("", "end", iid=s.full_name, text=s.full_name, values=(tris, verts, ", ".join(pics)))
+
+    def chosen(self):
+        sel = set(self.tree.selection())
+        return [s for s in self.track.solids() if not sel or s.full_name in sel] if self.track else []
+
+    def _batches(self, solids):
+        import hp2view as view
+        rgba_of, bits_of = self.mdl.rgba_lookup(self.packs)
+        return view.placed_batches([(s.full_name, s, None, False) for s in solids], rgba_of, bits_of)
+
+    def view(self, scenes=None, actions=()):
+        import hp2assets_gui as g
+        import hp2view as view
+        if scenes is None:
+            solids = self.chosen()
+            if not solids:
+                return
+            scenes = [(", ".join(s.full_name for s in solids[:3]) + (" ..." if len(solids) > 3 else ""),
+                       self._batches(solids))]
+        view.MeshViewer(self.app, "%s (models)" % self.rel(), scenes, icon=g.ICON, actions=actions)
+
+    def export(self):
+        from tkinter import filedialog
+        rel = self.rel()
+        if not rel:
+            return
+        out = filedialog.askdirectory(title="Export %s into" % rel, initialdir=self.app.settings.get("out"))
+        if not out:
+            return
+        self.app.settings["out"] = out
+        self.app.save()
+        data = self.app.data()
+        sel = list(self.tree.selection())
+        self.app.run("export %s" % rel, lambda: self.mdl.export(data, rel, out, only=sel or None, log=print))
+
+    def import_obj(self):
+        from tkinter import filedialog
+        import hp2assets as cli
+        import hp2track as trk
+        rel = self.rel()
+        if not rel:
+            return
+        obj = filedialog.askopenfilename(title="An OBJ for %s" % rel, filetypes=[("Wavefront OBJ", "*.obj")],
+                                         initialdir=self.app.settings.get("out"))
+        if not obj:
+            return
+        data = self.app.data()
+
+        def work():
+            return self.mdl.rebuild(data, rel, obj, log=print)
+
+        def shown(res):
+            if not res:
+                return
+            path, old, new, changed = res
+            if not changed:
+                return self.app.say("the OBJ changes none of the models")
+            before = [s for s in trk.Track(old).solids() if s.full_name in changed]
+            after = [s for s in trk.Track(new).solids() if s.full_name in changed]
+
+            def write():
+                self.app.run("write %s" % rel, lambda: cli.replace_file(path, new), lambda _: self.load())
+            self.view([("in the game now", self._batches(before)), ("after the import", self._batches(after))],
+                      actions=[("Write into the game", write)])
+            self.app.say("%d models changed: %s; Write into the game puts them in" % (len(changed),
+                                                                                     ", ".join(changed[:6])))
+        self.app.run("import %s" % os.path.basename(obj), work, shown)
+
+    def restore(self):
+        from tkinter import messagebox
+        import hp2assets as cli
+        rel = self.rel()
+        if rel and messagebox.askyesno("Restore", "Put the disc's %s back?" % rel, parent=self.app):
+            p = os.path.join(self.app.data(), rel)
+            self.app.run("restore %s" % rel, lambda: cli.restore_file(p), lambda _: self.load())
+
+
 class FilesTab:
     """Every file under data\\: its size, what it is, which tab changes it, and whether the game uses it."""
 
@@ -81,7 +230,8 @@ class FilesTab:
                 continue
             if show == "empty" and not st.startswith("empty"):
                 continue
-            if flt and flt not in e.rel.upper():
+            real = getattr(e, "real", None)
+            if flt and flt not in e.rel.upper() and not (real and flt in real.upper()):
                 continue
             folder, _, name = e.rel.rpartition("/")
             parent = ""
@@ -89,6 +239,8 @@ class FilesTab:
                 if folder not in folders:
                     folders[folder] = self.tree.insert("", "end", text=folder + "/", open=False)
                 parent = folders[folder]
+            if real:
+                name += "   = %s" % real.rpartition("/")[2]
             self.tree.insert(parent, "end", text=name, values=("{:,}".format(e.size), e.kind, e.tab, st))
 
 

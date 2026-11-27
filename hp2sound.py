@@ -172,15 +172,49 @@ class Bank:
         return msh, bytes(msb)
 
 
+def engine_banks(data):
+    """{engine bank name as the game asks for it (NEWEDNF...): [the car types that use it]}, from the car records
+    (GLOBALB 0x34600, the engine's bank at +816)."""
+    out = {}
+    gb = os.path.join(data, "GLOBAL", "GLOBALB.BUN")
+    if os.path.isfile(gb):
+        import hp2car
+        for r in hp2car.car_type_records(open(gb, "rb").read()):
+            e = r.raw[816:848].split(b"\0")[0].decode("latin-1").upper()
+            if e:
+                out.setdefault(e, []).append(r.raw[0:32].split(b"\0")[0].decode("latin-1"))
+    return out
+
+
+# the folder name a renamed bank had in exports made before it had its name: Effects\<old>
+BANK_ALIASES = {}
+
+
 def bank_paths(data):
-    """{bank name: (msh path, msb path)} of SOUND."""
+    """{bank name: (msh path, msb path)} of SOUND. A bank the install keeps by its hash (unnamed_<hash of the .MSB>,
+    as no name was known to the installer) takes the name the game asks for, found among the cars' engine banks:
+    unnamed_38aae9f9 is NEWETESTAROSA, the F50's engine."""
+    import hp2core as core
     out = {}
     d = os.path.join(data, "SOUND")
+    engines = None
     for f in sorted(os.listdir(d)):
         if f.upper().endswith(".MSH"):
             msb = os.path.join(d, f[:-4] + ".MSB")
             if os.path.isfile(msb):
-                out[f[:-4]] = (os.path.join(d, f), msb)
+                name = f[:-4]
+                if name.lower().startswith("unnamed_"):
+                    try:
+                        h = int(name[8:], 16)
+                    except ValueError:
+                        h = None
+                    if engines is None:
+                        engines = engine_banks(data)
+                    real = next((e for e in engines if core.bhash("SOUND\\%s.MSB" % e) == h), None)
+                    if real:
+                        BANK_ALIASES[real] = name
+                        name = real
+                out[name] = (os.path.join(d, f), msb)
     return out
 
 
@@ -614,6 +648,8 @@ def import_tree(data, root, write, log=print):
     total = 0
     for kind, name, rel in sources(data):
         folder = _find_dir(root, rel)
+        if folder is None and kind == "Effects" and name in BANK_ALIASES:
+            folder = _find_dir(root, os.path.join("Effects", BANK_ALIASES[name]))     # an export from before
         if folder is None:
             continue
         obj, files = open_source(data, kind, name)

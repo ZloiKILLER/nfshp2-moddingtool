@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 NAME = "NFSHP2 Modding suite"
-VERSION = "0.13"                  # the program's own (the exe's file properties), not the game's
+VERSION = "0.14"                  # the program's own (the exe's file properties), not the game's
 AUTHOR = "ZloiKILLER"
 YEAR = "2026"
 TITLE = "NFS Hot Pursuit 2"
@@ -59,6 +59,12 @@ gives more power; the walls and rails stop you. Without it, W A S D Q E move fre
 Export the solids as OBJ and import them back. The collision and the AI's routes stay as they are: cars drive on the \
 old ground.
 
+MODELS
+The models outside the cars and the tracks: the dashboards of the Barchetta, the F50 and the Spider in the cockpit view; \
+the menus' platform, car cover and the track select's small tracks; the race's spike belt, smoke bomb, rocket, barrel, \
+shaking bushes, ticket book, markers and the drivers and cops; the cut-scenes' people. View them, export them as OBJ \
+with their pictures, import an OBJ back (any shape; you see the model now and after before it is written).
+
 CAR PHYSICS
 Every number of each car type: wheels, tyres, mass, suspension, gearbox, engine, aerodynamics, brakes, top speed. \
 Double click a value to change it. JSON out and in for many cars at once.
@@ -88,6 +94,7 @@ EXPERIMENTAL
     Car from Underground 1: a car of NFS Underground in the place of an HP2 car, with its wheels, brakes, lamps, \
 badges and its paints as the skins. The game has 64 car types and no free one: BMWM5 is the safest to replace.
     Car stats: what the car select screen shows (name, 0-60, top speed, power) and the main physics.
+    Disc image: a disc image of the game with every change made here, for PCSX2, OPL or a disc for a PS2. Give the \noriginal image the game was installed from (only read); the game's archive is made again from the installed \ngame, everything else (the boot files, the PS2 logo, the system modules) is the original's. The port's own \ntranslations, pages and settings are not in it. The image is read back and checked when it is made.
 
 ALL FILES
 Every file of the install, what it is, and whether the game uses it.

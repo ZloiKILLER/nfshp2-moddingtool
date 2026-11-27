@@ -1,6 +1,6 @@
 # Features
 
-What the NFSHP2 Modding suite 0.13 can change, tab by tab. Any change can be undone. The first change of a file keeps the
+What the NFSHP2 Modding suite 0.14 can change, tab by tab. Any change can be undone. The first change of a file keeps the
 disc's version as `<file>.orig`, and **Restore the disc's** in the tab of that file puts it back. The Experimental tab
 writes car, texture, physics and text files, so its changes are undone in the Cars, Textures, Car physics and Texts tabs.
 
@@ -9,6 +9,7 @@ writes car, texture, physics and text files, so its changes are undone in the Ca
 | [Cars](#cars) | car models, through OBJ, with a 3D viewer | `CARS\<CAR>\GEOMETRY.geo` |
 | [Textures](#textures) | any picture of the game, through PNG | `.tex` and `.BUN` files |
 | [Tracks](#tracks) | track models, through OBJ, with a fly-through viewer | `TRACKS\TRACKB<nn>.BUN` |
+| [Models](#models) | the dashboards, the menus' and the race's models, the drivers, through OBJ | `CARS\<CAR>\DASHGEOM.geo`, `FRONTEND\FRONTB.BUN`, `GLOBAL\INGAMEB.BUN`, `GLOBAL\CHARACTERSA.geo` |
 | [Car physics](#car-physics) | every physics number of each car type | `GLOBAL\GLOBALB.BUN` |
 | [Texts](#texts) | every text, in six languages | `LANGUAGES\FE_<LANGUAGE>.lang` |
 | [Menu screens](#menu-screens) | where things are on the menus and how they look | `FRONTEND\FRONTB.BUN`, `GLOBAL\GLOBALB.BUN`, `GLOBAL\INGAMEB.BUN` |
@@ -56,6 +57,19 @@ writes car, texture, physics and text files, so its changes are undone in the Ca
 - **Export OBJ** writes the track's models, with the whole track put together in a second file for looking at.
 - **Import OBJ** changes models of the track: the road, the ground, buildings, trees and signs. A model that is placed
   several times changes everywhere it stands. The game's visibility culling grows to take in the new shapes.
+
+## Models
+
+The models that are neither a car nor a track:
+
+- the dashboards of the Barchetta, the F50 and the Spider in the cockpit view (panel, wheel, needles);
+- the menus': the car's platform, the car cover, the track select's small tracks;
+- the race's: the spike belt, the smoke bomb, the rocket, the roadblock barrel, the shaking bushes, the ticket book, the
+  markers, the drivers and the cops at three levels of detail;
+- the cut-scenes' drivers and cops.
+
+**View** them, **export** them as OBJ with their pictures, and **import** an OBJ back: any shape. You see the model now
+and after before anything is written.
 
 ## Car physics
 
@@ -114,7 +128,7 @@ size by itself.
 
 ## Experimental
 
-These work, but they are new and checked on fewer cases than the rest.
+These are new. The Underground car import has been checked in the game, and so has a disc image in PCSX2.
 
 - **Car from Underground 1**: a car of the PC game Need for Speed: Underground in place of an HP2 car (the game has
   exactly 64 car types and no free one).
@@ -129,6 +143,15 @@ These work, but they are new and checked on fewer cases than the rest.
   it replaces.
 - **Car stats**: what the car select screen shows (full and short name, 0-60, top speed, power) in all six languages,
   and the main physics: mass, power, grip, top speed, brakes, steering, gears, final drive and drag.
+- **Disc image**: a disc image of the game with every change you made, for PCSX2, OPL or a disc for a PS2.
+  - It needs the original image the game was installed from, which is only read. The game's archive is made again from
+    the installed game.
+  - Everything else is the original's, byte for byte: the boot files, the PS2 logo and the system modules. Both of the
+    disc's file systems follow the archive's new size.
+  - The image is read back and checked when it is made.
+  - The port's own translations, menu pages and settings stay in the port. Pictures over 1024 a side, which a PS2
+    cannot draw, are named before the image is made.
+  - Textures given a new size are not recommended on a disc yet: they are named too.
 
 ## All files
 

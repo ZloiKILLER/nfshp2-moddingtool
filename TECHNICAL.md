@@ -34,7 +34,7 @@ The `.py` files also run without building:
   - every strip packet encodes again to the same bytes;
   - export to OBJ and import back gives the same triangles, vertices and materials.
 
-  For release 0.13 all 44 cars pass.
+  For release 0.14 all 44 cars pass.
 - **`ModManager.exe --selftest GAME OUT`** runs every part through the built exe and writes `OUT/selftest.log`. It
   writes nothing to the game. It covers:
   - car export and an import in dry-run mode;
@@ -71,6 +71,8 @@ The `.py` files also run without building:
 | `hp2files.py` | the survey of every file, with `seen_files.txt` (files the port read in its recorded demos) |
 | `hp2donor.py` | NFS Underground's cars and textures |
 | `hp2convert.py` | an Underground car made into an HP2 car |
+| `hp2models.py` | the models outside the cars and the tracks: dashboards, the menus' and the race's, the drivers |
+| `hp2iso.py` | a disc image: the archive made from the installed game, ISO9660 and UDF made to follow |
 | `codec/hp2codec.c` | MV30 decode and encode, PS2 SPU ADPCM decode and encode, JDLZ decompression |
 | `icons/`, `modmanager.ico` | the window's icons |
 | `version_info.txt` | the exe's file properties |

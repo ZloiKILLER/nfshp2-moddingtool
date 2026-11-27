@@ -295,7 +295,7 @@ class TextsTab:
                   "buttons, %s %d are filled in.").pack(side="left")
         main = ttk.Frame(f)
         main.pack(fill="both", expand=True, pady=6)
-        cols = [(l, l.title()) for l in tx.LANGUAGES]
+        cols = [(l, l.title()) for l in tx.TABLES]
         tf, self.tree = _tree(main, cols, [70] + [200] * 6, 24)
         self.tree.heading("#0", text="id")
         tf.pack(side="left", fill="both", expand=True)
@@ -311,7 +311,7 @@ class TextsTab:
                   "Only characters of the\ngame's fonts show.").pack(pady=8)
 
     def load(self):
-        self.files = self.tx.load_all(self.app.data())
+        self.files = self.tx.load_all(self.app.data(), self.tx.TABLES)
         self.port = self.tx.port_texts(self.app.data())
         self.fill()
 
@@ -337,11 +337,11 @@ class TextsTab:
         first = next(iter(self.files.values()))
         n = 0
         for i in sorted(first.texts):
-            row = [self.text(l, i) for l in self.tx.LANGUAGES]
+            row = [self.text(l, i) for l in self.tx.TABLES]
             if flt and flt not in str(i) and not any(flt in r.lower() for r in row):
                 continue
-            mark = " *" if any((l, i) in self.pending for l in self.tx.LANGUAGES) else ""
-            if any(self.port_text(l, i) is not None for l in self.tx.LANGUAGES):
+            mark = " *" if any((l, i) in self.pending for l in self.tx.TABLES) else ""
+            if any(self.port_text(l, i) is not None for l in self.tx.TABLES):
                 mark += " port"
             self.tree.insert("", "end", iid=str(i), text="%d%s" % (i, mark), values=row)
             n += 1
@@ -354,7 +354,7 @@ class TextsTab:
                 for en, t in strings.items():
                     own.setdefault(en, {})[lang] = t
             for k, (en, tr) in enumerate(sorted(own.items())):
-                row = [tr.get(l, en if l == "ENGLISH" else "") for l in self.tx.LANGUAGES]
+                row = [tr.get(l, en if l == "ENGLISH" else "") for l in self.tx.TABLES]
                 if flt and not any(flt in r.lower() for r in row):
                     continue
                 self.tree.insert("", "end", iid="p:%d" % k, text="port", values=row)
@@ -370,7 +370,7 @@ class TextsTab:
         d.title("Text %d" % i)
         d.transient(self.tree.winfo_toplevel())
         vars_ = {}
-        for r, l in enumerate(self.tx.LANGUAGES):
+        for r, l in enumerate(self.tx.TABLES):
             ttk.Label(d, text=l.title()).grid(row=r, column=0, sticky="w", padx=6, pady=2)
             v = tk.StringVar(value=self.text(l, i))
             ttk.Entry(d, textvariable=v, width=90).grid(row=r, column=1, padx=6, pady=2)
@@ -391,7 +391,7 @@ class TextsTab:
             if self.tree.exists(item):
                 self.tree.see(item)
         b = ttk.Frame(d)
-        b.grid(row=len(self.tx.LANGUAGES), column=0, columnspan=2, pady=6)
+        b.grid(row=len(self.tx.TABLES), column=0, columnspan=2, pady=6)
         ttk.Button(b, text="OK", command=ok).pack(side="left", padx=4)
         ttk.Button(b, text="Cancel", command=d.destroy).pack(side="left")
 
@@ -443,7 +443,7 @@ class TextsTab:
 
     def restore(self):
         if messagebox.askyesno("Restore", "Put the disc's texts of all languages back?"):
-            for lang in self.tx.LANGUAGES:
+            for lang in self.tx.TABLES:
                 p = self.tx.lang_path(self.app.data(), lang)
                 if os.path.exists(p + ".orig"):
                     cli.restore_file(p)
@@ -853,7 +853,14 @@ class SoundTab:
                     secs = max(0, e - s - 48) / 16 * 28 / self.so.SPEECH_RATE
                     self.tree.insert(gid, "end", iid="%d:%d" % (b, i), text="clip %d" % i,
                                      values=("%.2f" % secs, self.so.SPEECH_RATE, "mono"))
-        self.info.configure(text=", ".join(os.path.basename(p) for p in fs))
+        text = ", ".join(os.path.basename(p) for p in fs)
+        if kind == "Effects":
+            cars = self.so.engine_banks(self.app.data()).get(name.upper())
+            if cars:
+                text += "  (the engine of %s)" % ", ".join(cars)
+            if name in self.so.BANK_ALIASES:
+                text = "%s: %s" % (name, text)
+        self.info.configure(text=text)
 
     def _items(self, selected):
         if selected:
