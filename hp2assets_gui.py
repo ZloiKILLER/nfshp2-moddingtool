@@ -630,6 +630,16 @@ def selftest(game, out):
             msh, msb = hp2sound.bank_paths(data)["FRONTEND"]
             assert bank.build() == (open(msh, "rb").read(), open(msb, "rb").read())
             print("sound: FRONTEND rebuilds byte for byte, %d sounds" % len(bank.sounds()))
+            for lang in hp2sound.speech_languages(data)[:1]:
+                ban, dat = [open(p, "rb").read() for p in hp2sound.speech_paths(data, lang)]
+                sp = hp2sound.Speech(ban, dat)
+                clips = [[bytes(sp.dat[slice(*sp.clip_range(b, i))]) for i in range(bk.count)] for b, bk in enumerate(sp.banks)]
+                sp.rebuild()
+                assert clips == [[bytes(sp.dat[slice(*sp.clip_range(b, i))]) for i in range(bk.count)]
+                                 for b, bk in enumerate(sp.banks)], lang
+                assert bytes(sp.dat) == dat or len(sp.dat) < len(dat), lang
+                print("speech: %s rebuilds %s" % (lang, "byte for byte" if bytes(sp.dat) == dat else
+                                                  "with %d bytes left behind by moved banks dropped" % (len(dat) - len(sp.dat))))
             gb = open(os.path.join(data, "GLOBAL", "GLOBALB.BUN"), "rb").read()
             print("physics: %d car types" % len(hp2physics.records(gb)))
             lib = hp2screens.Library(data)

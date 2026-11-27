@@ -14,7 +14,9 @@ has the flag 1 and the next the flag 7, and the last pair is padded to its full 
 Speech: the BAN's 16-byte entries {u32 count/handle, u32 the bank's offset in the BAN, u32 0, u32 the bank's base in the
 DAT}; a bank: u16 id, u16 sub, u8 flags (low nibble: parameters a sample), u8 samples, u8 queue, u8 unit (U = (b+1)*256),
 u16 end in units, u16; from +12 each sample's big-endian u16 offset in units and its parameters. A clip at base + offset*U is
-a 48-byte VAG header and mono ADPCM at 24000 Hz. A clip longer than its place moves its whole bank to the end of the DAT.
+a 48-byte VAG header and mono ADPCM at 24000 Hz. The game plays a clip to the next clip's offset (the VAG header is
+skipped, its size not read), so a replaced clip gets a place of its own length: its bank is laid out anew and the DAT
+rebuilt back to back (Speech.rebuild).
 
 Files may change size: the port builds its archive from the files at start. Keep the names: the game finds patches by name.
 """
@@ -320,8 +322,10 @@ class Speech:
         self.names, self.table = {}, None
         if not self.banks:
             return
-        start = max(bk.base + bk.end * bk.unit for bk in self.banks)
         d = self.dat
+        start = max(bk.base + bk.end * bk.unit for bk in self.banks)
+        if self._table_at(struct.unpack_from("<I", d, 0)[0] if len(d) >= 4 else 0):
+            start = struct.unpack_from("<I", d, 0)[0]          # the first word says where the table is
         try:
             count, = struct.unpack_from("<I", d, start)
             p, rows = start + 4, []
@@ -342,6 +346,21 @@ class Speech:
             if r is not None:
                 n = r[0].split(b"\0")[0].decode("latin-1")
                 self.names[b] = n[:-4] if n.lower().endswith(".dat") else n
+
+    def _table_at(self, start):
+        """Whether a whole name table starts at start and runs to the end of the DAT."""
+        d = self.dat
+        try:
+            count, = struct.unpack_from("<I", d, start)
+            if not 0 < count < 100000:
+                return False
+            p = start + 4
+            for _ in range(count):
+                ln, = struct.unpack_from("<I", d, p)
+                p += 16 + ln
+            return p == len(d)
+        except struct.error:
+            return False
 
     def name(self, b):
         return self.names.get(b, "")
@@ -372,58 +391,152 @@ class Speech:
         return bytes(head) + data
 
     def replace(self, b, i, pcm, rate):
-        """A clip in: in its place when it fits, else its bank moves to the end of the DAT with the new clip."""
+        """A clip in, at its own length (replace_many)."""
         return self.replace_many(b, {i: (pcm, rate)})
 
     def replace_many(self, b, new):
-        """Clips of bank b in, {clip: (pcm, rate)}: each in its place when all of them fit, else the bank moves once to
-        the end of the DAT with all of them (a bank moved clip by clip would leave a copy of itself behind each time)."""
+        """Clips of bank b in, {clip: (pcm, rate)}, each at its own length. The game plays a clip from its offset in the
+        BAN to the next clip's (iSPCH_UnPackSample, cSEDWedge::PlaySentence), so a clip left in a longer place would
+        end in a pause and one in a shorter place would be cut: the bank is laid out anew and the DAT rebuilt."""
+        self.replace_banks({b: new})
+        return "at its own length" if len(new) == 1 else "at their own length"
+
+    def replace_banks(self, new):
+        """Clips of many banks in, {bank: {clip: (pcm, rate)}}, with one rebuild of the DAT for all of them."""
+        changed = {}
+        for b, clips in sorted(new.items()):
+            bk = self.banks[b]
+            cur = changed.get(bk.ban_off)
+            if cur is None:
+                cur = [bytes(self.dat[slice(*self.clip_range(b, k))]) for k in range(bk.count)]
+                for t in self.twins(b):                     # one list for all: they stay one bank in the DAT
+                    changed[self.banks[t].ban_off] = cur
+            for i, (pcm, rate) in clips.items():
+                cur[i] = self._clip(b, i, pcm, rate)
+        if changed:
+            self.rebuild(changed)
+
+    def _desc(self, b):
         bk = self.banks[b]
-        made = {i: self._clip(b, i, pcm, rate) for i, (pcm, rate) in new.items()}
-        if all(len(c) <= self.clip_range(b, i)[1] - self.clip_range(b, i)[0] for i, c in made.items()):
-            for i, c in made.items():
-                s, e = self.clip_range(b, i)
-                self.dat[s:e] = c + bytes(e - s - len(c))
-            return "in place"
-        clips = []
-        for k in range(bk.count):
-            cs, ce = self.clip_range(b, k)
-            clips.append(made[k] if k in made else bytes(self.dat[cs:ce]))
-        # the name table comes off the end and goes back after the moved bank, its row for the bank following it
-        table = self.table
-        if table is not None:
-            del self.dat[table[0]:]
-        old_base = bk.base
-        new_base = len(self.dat) + ((-len(self.dat)) % 2048)
-        self.dat += bytes(new_base - len(self.dat))
-        pos = 0
-        offs = []
-        for c in clips:
-            offs.append(pos // bk.unit)
-            self.dat += c + bytes((-len(c)) % bk.unit)
-            pos += len(c) + ((-len(c)) % bk.unit)
-        if pos // bk.unit > 0xFFFF:
-            raise SystemExit("the bank would be too long")
-        if table is not None:
-            rows = table[1]
-            for r in rows:
-                if r[3] == old_base:
-                    same = r[1] == r[2]
-                    r[1], r[3] = pos, new_base
-                    if same:
-                        r[2] = pos
-            at = len(self.dat)
-            out = bytearray(struct.pack("<I", len(rows)))
+        return bytes(self.ban[bk.ban_off:bk.ban_off + 12 + bk.count * (2 + bk.npar)])
+
+    def twins(self, b):
+        """b and the banks that are the same bank under another BAN entry: the same place in the DAT and the same
+        description, byte for byte (Boulderturnout twice in English, 672 such in French). A clip put into one goes into
+        all of them, or the game, which may take either, would sometimes say the old one."""
+        bk = self.banks[b]
+        d = self._desc(b)
+        return [t for t, o in enumerate(self.banks) if t == b or (o.base == bk.base and self._desc(t) == d)]
+
+    def rebuild(self, changed=None):
+        """The DAT laid out anew, everything back to back as the game's packer left it: its first 256 bytes (the table's
+        offset in the first word), then the banks in their order, then the name table. changed is {a bank's place in
+        the BAN: [its clips' bytes]}: those banks are laid out from their clips (each padded to the bank's unit) next to
+        where they were. What no bank and no table row points at (the copies left behind by moving banks, as this tool
+        did up to 0.14) is dropped. Several BAN entries may share one bank (the same place in the BAN and the DAT):
+        they move together. With nothing changed and nothing left behind the file comes out byte for byte the same."""
+        import bisect
+        changed = changed or {}
+        ban, d = self.ban, self.dat
+        ents = [struct.unpack_from("<IIII", ban, e * 16)[1::2] for e in range(self.n)]     # (place in the BAN, base)
+        length = {bk.ban_off: bk.end * bk.unit for bk in self.banks}
+        rows = [list(r) for r in self.table[1]] if self.table else []
+        moved = {base for boff, base in ents if boff in changed}
+        kept = {base for boff, base in ents if boff not in changed}
+        for boff, clips in changed.items():
+            bk = next(k for k in self.banks if k.ban_off == boff)
+            if any(o & 0x8000 for o in bk.offsets):
+                raise SystemExit("bank at %d: a clip of it stands for another one (not supported)" % boff)
+        spans = [(base, base + length[boff]) for boff, base in ents if boff not in changed]
+        spans += [(r[3], r[3] + r[1]) for r in rows if not (r[3] in moved and r[3] not in kept)]
+        spans.sort()
+        regions = []
+        for s, e in spans:
+            if regions and s <= regions[-1][1]:
+                regions[-1][1] = max(regions[-1][1], e)
+            else:
+                regions.append([s, e])
+        starts = [r[0] for r in regions]
+
+        def inside(a):
+            k = bisect.bisect_right(starts, a) - 1
+            return k if k >= 0 and a < regions[k][1] else None
+
+        # a new bank goes right after the region its old place was in (or where that place was, if nothing is left);
+        # BAN entries given the same list of clips (twins) get one copy of it
+        pieces = [((s, 0), "old", (s, e)) for s, e in regions]
+        old_base = {}
+        group = {}
+        for boff in changed:
+            base = next(b for o, b in ents if o == boff)
+            old_base[boff] = base
+            group.setdefault(id(changed[boff]), []).append(boff)
+        for boffs in group.values():
+            base = old_base[boffs[0]]
+            k = inside(base)
+            pieces.append(((regions[k][1] if k is not None else base, -1), "new", boffs))
+        pieces.sort(key=lambda p: p[0])
+        head = min([256] + [r[0] for r in regions] + list(moved) + [len(d)])     # the packer's head is 256 bytes
+        out = [bytes(d[:head])]
+        at = head
+        new_start, new_base, new_len = [], {}, {}
+        for _, what, x in pieces:
+            if what == "old":
+                s, e = x
+                new_start.append(at)
+                out.append(bytes(d[s:e]))
+                at += e - s
+                continue
+            boffs = x
+            clips = changed[boffs[0]]
+            ubyte = ban[boffs[0] + 7]
+            while True:
+                unit = (ubyte + 1) * 256
+                sizes = [len(c) + (-len(c) % unit) for c in clips]
+                offs = [sum(sizes[:k]) // unit for k in range(len(sizes))]
+                if (not offs or offs[-1] < 0x8000) and sum(sizes) // unit <= 0xFFFF:
+                    break
+                if ubyte == 255:
+                    raise SystemExit("bank at %d would be too long" % boffs[0])
+                ubyte += 1
+            for c, sz in zip(clips, sizes):
+                out.append(c + bytes(sz - len(c)))
+            for boff in boffs:
+                bk = next(k for k in self.banks if k.ban_off == boff)
+                ban[boff + 7] = ubyte
+                for k, o in enumerate(offs):
+                    struct.pack_into(">H", ban, boff + 12 + k * (2 + bk.npar), o)
+                struct.pack_into("<H", ban, boff + 8, sum(sizes) // unit)
+                new_base[boff], new_len[boff] = at, sum(sizes)
+            at += sum(sizes)
+
+        def where(a):
+            k = inside(a)
+            return a - regions[k][0] + new_start[k]
+
+        for e, (boff, base) in enumerate(ents):
+            struct.pack_into("<I", ban, e * 16 + 12, new_base[boff] if boff in changed else where(base))
+        for r in rows:
+            if r[3] in moved and r[3] not in kept:
+                boff = next(o for o in changed if old_base[o] == r[3])
+                old = length[boff]
+                r[1], r[2] = (new_len[boff] if r[1] == old else r[1]), (new_len[boff] if r[2] == old else r[2])
+                r[3] = new_base[boff]
+            else:
+                r[3] = where(r[3])
+        if self.table is not None:
+            tab = [struct.pack("<I", len(rows))]
             for block, size, size2, off in rows:
-                out += struct.pack("<I", len(block)) + block + struct.pack("<III", size, size2, off)
-            self.dat += out
-            self.table = (at, rows)
-        for k, o in enumerate(offs):
-            struct.pack_into(">H", self.ban, bk.ban_off + 12 + k * (2 + bk.npar), (bk.offsets[k] & 0x8000) | o)
-        struct.pack_into("<H", self.ban, bk.ban_off + 8, pos // bk.unit)
-        struct.pack_into("<I", self.ban, b * 16 + 12, new_base)
-        self.banks[b] = SpeechBank(self.ban, self.n, b)
-        return "bank moved to the end of the file"
+                tab.append(struct.pack("<I", len(block)) + block + struct.pack("<III", size, size2, off))
+            out.append(b"".join(tab))
+        self.dat = bytearray(b"".join(out))
+        if self.table is not None and head >= 4:
+            struct.pack_into("<I", self.dat, 0, at)
+        self.banks = [SpeechBank(self.ban, self.n, e) for e in range(self.n)]
+        names = self.names
+        self._read_names()
+        if not self.names:
+            self.names = names
 
 
 def speech_languages(data):
@@ -609,8 +722,8 @@ def import_folder(kind, obj, folder):
         else:
             speech.setdefault(key[0], {})[key[1]] = (pcm, rate)
         rep["changed"].append(name_of[key])
-    for b, clips in speech.items():
-        obj.replace_many(b, clips)
+    if speech:
+        obj.replace_banks(speech)
     return rep
 
 
@@ -640,6 +753,53 @@ def _find_dir(root, rel):
             return None
         here = hit
     return here
+
+
+def speech_folders(data, folder, lang=None):
+    """[(language, folder of its WAVs)] that folder holds: WAVs of its own (for lang), or Speech\\<LANGUAGE> or
+    <LANGUAGE> folders under it (an Export all tree, or a folder per language)."""
+    if lang and any(f.lower().endswith(".wav") for f in os.listdir(folder)):
+        return [(lang, folder)]
+    out = []
+    for name in speech_languages(data):
+        for rel in (os.path.join("Speech", name), name):
+            d = _find_dir(folder, rel)
+            if d is not None and any(f.lower().endswith(".wav") for f in os.listdir(d)):
+                out.append((name, d))
+                break
+    return out
+
+
+def import_speech_anew(data, folder, write, lang=None, log=print):
+    """Speech put in anew, in one go: for each language the folder has WAVs for (speech_folders), the disc's speech
+    (the .orig the first write kept, else the files as they are) with the folder's WAVs in, every clip at its own
+    length, written whole. What earlier imports left in the files (pauses after shorter clips, banks moved to the end
+    by 0.14 and before) is gone; a clip not in the folder is the disc's. Answers the number of clips put in."""
+    total = 0
+    pairs = speech_folders(data, folder, lang)
+    if not pairs:
+        log("no speech WAVs in %s (bankNNNN_..._clipNN.wav, or Speech\\<LANGUAGE> folders)" % folder)
+        return 0
+    for name, d in pairs:
+        files = list(speech_paths(data, name))
+        src = [p + ".orig" if os.path.isfile(p + ".orig") else p for p in files]
+        sp = Speech(open(src[0], "rb").read(), open(src[1], "rb").read())
+        rep = import_folder("Speech", sp, d)
+        for f in rep["unknown"]:
+            log("%s: %s is no clip of it" % (name, f))
+        for f, why in rep["bad"]:
+            log("%s: %s: %s" % (name, f, why))
+        new = [bytes(sp.ban), bytes(sp.dat)]
+        wrote = []
+        for p, b in zip(files, new):
+            if os.path.getsize(p) != len(b) or open(p, "rb").read() != b:
+                write(p, b)
+                wrote.append(os.path.basename(p))
+        log("%s: %d clips put in, %d as on the disc; from the disc's %s; %s" % (
+            name, len(rep["changed"]), len(rep["same"]), "copy (.orig)" if src[1] != files[1] else "files",
+            ("written " + ", ".join(wrote)) if wrote else "the files were that already"))
+        total += len(rep["changed"])
+    return total
 
 
 def import_tree(data, root, write, log=print):

@@ -786,20 +786,18 @@ class SoundTab:
         tf.pack(side="left", fill="both", expand=True)
         btns = ttk.Frame(main)
         btns.pack(side="left", fill="y", padx=6)
-        ttk.Button(btns, text="Play", command=self.play).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Stop", command=self.stop).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Export selected (WAV)…", command=lambda: self.export(True)).pack(fill="x", pady=(16, 2))
-        ttk.Button(btns, text="Export all (WAV)…", command=lambda: self.export(False)).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Replace with a WAV…", command=self.replace).pack(fill="x", pady=(16, 2))
-        ttk.Button(btns, text="Import a folder of WAVs…", command=self.import_folder).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Write into the game", command=self.write).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Discard edits", command=self.open_source).pack(fill="x", pady=2)
-        ttk.Label(btns, text="All the game's sound:").pack(anchor="w", pady=(16, 0))
-        ttk.Button(btns, text="Export all (WAV tree)…", command=self.export_tree).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Import a WAV tree…", command=self.import_tree).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Restore the disc's", command=self.restore).pack(fill="x", pady=(16, 2))
-        ttk.Label(btns, justify="left", text="A WAV takes the sound's rate\nand channels, and loops if\nit looped. "
-                  "Keep effects\nshort: the sound chip has\n2 MB for all banks at once.").pack(pady=8)
+        for text, cmd in (("Play", self.play), ("Stop", self.stop),
+                          ("Export selected (WAV)…", lambda: self.export(True)),
+                          ("Export all (WAV)…", lambda: self.export(False)),
+                          ("Replace with a WAV…", self.replace),
+                          ("Import a folder of WAVs…", self.import_folder),
+                          ("Write into the game", self.write),
+                          ("Discard edits", self.open_source),
+                          ("Export all (WAV tree)…", self.export_tree),
+                          ("Import a WAV tree…", self.import_tree),
+                          ("BAN & DAT Rewrite…", self.speech_anew),
+                          ("Restore the disc's", self.restore)):
+            ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=1)
 
     def load(self):
         data = self.app.data()
@@ -987,6 +985,30 @@ class SoundTab:
         data = self.app.data()
         self.dirty = False
         self.app.run("import a WAV tree", lambda: self.so.import_tree(data, folder, cli.replace_file),
+                     lambda _: self.open_source())
+
+    def speech_anew(self):
+        """One step: the disc's speech, the folder's WAVs in at their own length, written into the game."""
+        lang = self.source.get().split(": ", 1)[1] if self.kind == "Speech" else None
+        folder = _ask_dir(self.app, "Speech WAVs: a folder of them%s, or a tree with Speech\\<LANGUAGE>"
+                          % (" (for %s)" % lang if lang else ""))
+        if not folder:
+            return
+        data = self.app.data()
+        pairs = self.so.speech_folders(data, folder, lang)
+        if not pairs:
+            return messagebox.showinfo(
+                "BAN & DAT Rewrite", "No speech WAVs in %s.\n\nThey go by the names Export gives them "
+                "(bank0003_19AddPrime_clip00.wav), in the folder itself with a Speech source chosen above, or in "
+                "Speech\\<LANGUAGE> folders." % folder, parent=self.app)
+        if not messagebox.askyesno(
+                "BAN & DAT Rewrite", "%s\n\nFor each: the speech as it came from the disc, with these WAVs in, every "
+                "clip at its own length, written into the game. What earlier imports put in is replaced: a clip that is "
+                "not in the folder is the disc's again.\n\nClose the game first. Go on?"
+                % "\n".join("%s: %s" % p for p in pairs), parent=self.app):
+            return
+        self.dirty = False
+        self.app.run("BAN & DAT Rewrite", lambda: self.so.import_speech_anew(data, folder, cli.replace_file, lang),
                      lambda _: self.open_source())
 
     def replace(self):

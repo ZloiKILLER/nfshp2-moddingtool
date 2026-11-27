@@ -8,7 +8,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 NAME = "NFSHP2 Modding suite"
-VERSION = "0.14"                  # the program's own (the exe's file properties), not the game's
+VERSION = "0.15"                  # the program's own (the exe's file properties), not the game's
 AUTHOR = "ZloiKILLER"
 YEAR = "2026"
 TITLE = "NFS Hot Pursuit 2"

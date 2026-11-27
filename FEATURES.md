@@ -109,6 +109,12 @@ size by itself.
   the horn).
 - **Music**: the 23 tunes of the EA TRAX jukebox. A tune can be any length.
 - **Speech**: the commentary and the police radio, in each language, every bank by its name (`19AddPrime`, `CarDa`...).
+  A clip can be any length: the game plays each clip to where the next one starts, so the speech file is laid out
+  anew round the clips you put in, with no pause after a shorter clip and nothing cut from a longer one. Space left
+  behind by earlier versions of the tool (0.14 and before moved a bank to the end of the file) is given back.
+- **BAN & DAT Rewrite**: one button for a whole voice-over. Pick a folder of speech WAVs (or a tree with
+  `Speech\<LANGUAGE>`): the speech as it came from the disc, with those WAVs in, every clip at its own length, is
+  written into the game. Whatever earlier imports left in the files goes; a clip not in the folder is the disc's.
 - Play any sound, export it as WAV, or replace it with your own WAV (any rate, 8 to 32 bits). It is converted to the
   game's format, rate and channels by itself. A replaced effect loops if the original did.
 - **Many at once**: export a bank, the music or a language's speech, change the WAVs you want, and import the folder:
